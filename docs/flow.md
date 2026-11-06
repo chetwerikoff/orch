@@ -29,7 +29,7 @@ REVIEW    --findings, round < cap-->        FIXING
 REVIEW    --findings, round = cap-->        FIXING, then READY after CI + smoke on new head
 REVIEW    --worker cannot fix-->            ESCALATED
 FIXING    --new head pushed-->              CI
-READY     --merge (see open question)-->    MERGED
+READY     --runner starts merge agent-->    MERGED
 any       --no head change for T hours-->   relaunch worker once, then ESCALATED
 READY     --behind / conflict-->            FIXING
 ```
@@ -47,6 +47,12 @@ READY     --behind / conflict-->            FIXING
   round the worker applies the findings and the PR goes to READY once CI and smoke
   pass on the new head; there is no extra review of the fix. T1/T2 work reverts
   with `git revert` by definition, so an unreviewed fix is a bounded risk.
+- **PR reviewers per tier:** T1 and T2 get the GPT reviewer; T3 gets the GPT and
+  Opus reviewers in parallel, independent of each other. Both families differ from
+  the default worker (GLM).
+- **Merge:** on READY the runner starts a fresh merge agent. It merges the PR,
+  adopts the merged `main` in the operator checkout, applies any local adoption
+  steps, and removes the worker's worktree.
 - **Reviewer outage** is retried on the next run and does not consume a round.
 - **Escalation** goes to the orchestrator and, from there, to the operator. The
   runner never tries to resolve an unusual case itself.
@@ -61,11 +67,6 @@ handles escalations. It does not watch normal transitions.
 Proof that a worker did what it said; checking a reviewer's verdict; multi-source
 review consensus; reusing a smoke PASS across heads; heartbeats beyond one stall
 timeout; label sync as a second source of truth.
-
-## Open question
-
-Merge on READY: the runner merges directly, or the runner hands the PR to a
-separate merge agent. Operator decision pending.
 
 ## Pilot acceptance
 
