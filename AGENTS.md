@@ -95,13 +95,13 @@ See [recipes and rationale](docs/coworker-delegation.md).
 
 | Role | Runtime and default model | Notes |
 | --- | --- | --- |
-| Architect / spec author | Claude Code, Opus medium (T3: high) | Writes the Issue spec and its tier. |
+| Architect / spec author | Claude Code, Opus medium (T3: high) | Specs, defect classes ([prompt](prompts/architect.md)). |
 | Opus reviewer, lens | Claude Code, Opus high | Separate fresh sessions; spec and PR review. |
 | GPT reviewer | OpenCode V2 (`opencode2`), `openai/gpt-6.1-sol` medium | Fresh session per review; spec and PR review. |
 | Editor | Claude Code, Opus medium (T3: high) | Fresh session; decides and applies reviewer findings. |
 | Worker | OpenCode V2, `zai-coding-plan/glm-5.3` high; alternative Claude Code, Sonnet 5.5 | Own git worktree, visible Orca terminal. |
 | Merge agent | Fresh agent on `main` | Merges, adopts locally, removes the worker worktree. |
-| Orchestrator | LLM agent | Queue, escalations, and runner notices about stuck workers. |
+| Orchestrator | OpenCode V2, `openai/gpt-6.1-terra` medium | Queue, escalations, runner notices about stuck workers ([prompt](prompts/orchestrator.md)). |
 | Runner | Script | Drives every deterministic post-worker transition. |
 
 OpenCode V2 reads the shared `~/.config/opencode/opencode.json`. Defaults above
