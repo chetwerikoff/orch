@@ -33,7 +33,8 @@ SMOKE     --fail (2nd)-->                       ESCALATED
 FIXING    --new head pushed-->                  CI
 READY     --runner starts merge agent-->        MERGED
 READY     --behind / conflict-->                FIXING
-any       --no head change for T hours-->       relaunch worker once, then ESCALATED
+any       --worker owes work, session stopped-->  notify orchestrator
+any       --session running, no new head 20m-->  notify orchestrator (again every 20m)
 ```
 
 - **Done signal:** the PR leaving draft, not the worker's report.
@@ -58,6 +59,13 @@ any       --no head change for T hours-->       relaunch worker once, then ESCAL
 - **Reviewer outage** is retried on the next run and does not consume a round.
 - **Escalation** goes to the orchestrator and, from there, to the operator. The
   runner never tries to resolve an unusual case itself.
+- **Worker supervision** is the orchestrator's judgment, not the runner's. The
+  runner only notices facts and notifies the orchestrator: the worker owes work
+  (WORKING, FIXING, SMOKE) but its session stopped without a question; it waits
+  on a question or a permission; or it runs with no new head for 20 minutes. The
+  orchestrator looks at what the worker is doing (looping on one test, off task)
+  and decides: continue, relaunch, or escalate to the operator. The runner never
+  sends `continue` or relaunches a worker on its own.
 
 ## Review
 
@@ -111,13 +119,13 @@ Same model as orchestrator-pack.
 ## Orchestrator
 
 Picks Issues from the queue under the slot limit, starts their workers, and
-handles escalations. It does not watch normal transitions.
+handles escalations and runner notices about workers (see Worker supervision).
+It does not watch normal transitions.
 
 ## Deliberately not handled
 
 Proof that a worker did what it said; checking a reviewer's verdict; multi-source
-review consensus; heartbeats beyond one stall
-timeout; label sync as a second source of truth.
+review consensus; the runner judging whether a worker is looping; label sync as a second source of truth.
 
 ## Pilot acceptance
 
