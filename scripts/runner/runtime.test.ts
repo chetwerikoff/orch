@@ -255,3 +255,44 @@ test('smoke request before report suppresses another review after a new head', (
 test('worktree paths with spaces survive native porcelain parsing', () => {
   assert.equal(parseWorktrees('worktree /repo/with space\nHEAD abc\nbranch refs/heads/orch/1\n')[0].path, '/repo/with space');
 });
+test('session discovery follows V2 cursors without repeating first-page order', async () => {
+  const calls: string[][] = [];
+  const runner = new Runner(main, {}, async (file, args) => {
+    assert.equal(file, 'opencode2'); assert.equal(args[1], 'session.list'); calls.push(args);
+    assert.ok(args.includes(`directory=${worker}`));
+    if (args.includes('cursor=next_page')) {
+      assert.ok(!args.some(a => a.startsWith('order=')));
+      return JSON.stringify({ data: [{ id: 'ses_orch_1_101' }], cursor: { next: 'unused' } });
+    }
+    assert.ok(args.includes('order=desc'));
+    return JSON.stringify({ data: Array.from({ length: 100 }, (_, i) => ({ id: `ses_orch_1_${i}` })), cursor: { next: 'next_page' } });
+  });
+  assert.equal((await runner.sessions(worker)).length, 101);
+  assert.equal(calls.length, 2);
+});
+test('smoke history follows V2 message cursors and preserves the user-type filter', async () => {
+  const calls: string[][] = [];
+  const runner = new Runner(main, {}, async (file, args) => {
+    assert.equal(file, 'opencode2'); calls.push(args);
+    assert.ok(args.includes('sessionID=ses_orch_1'));
+    if (args[1] === 'session.inbox.list') return JSON.stringify({ data: [] });
+    assert.equal(args[1], 'session.message.list'); assert.ok(args.includes('type=user'));
+    if (args.includes('cursor=next_page')) return JSON.stringify({ data: [{ id: 'msg_orch_1_smoke_abc' }], cursor: {} });
+    return JSON.stringify({ data: Array.from({ length: 100 }, (_, i) => ({ id: `msg_other_${i}` })), cursor: { next: 'next_page' } });
+  });
+  assert.equal(await runner.smokeStarted('ses_orch_1', 1), true);
+  assert.equal(calls.length, 3);
+});
+test('start emits installed-V2 session and queued-prompt request shapes', async () => {
+  const f = fixture(); await f.runner.start(1);
+  const create = f.calls.find(c => c.file === 'opencode2' && c.args[1] === 'session.create')!;
+  assert.deepEqual(JSON.parse(create.args[create.args.indexOf('--data') + 1]), {
+    id: 'ses_orch_1_2', location: { directory: `${worker}1` },
+    model: { providerID: 'openai', id: 'gpt-6.1-sol', variant: 'medium' },
+  });
+  const prompt = f.calls.find(c => c.file === 'opencode2' && c.args[1] === 'session.prompt')!;
+  const body = JSON.parse(prompt.args[prompt.args.indexOf('--data') + 1]);
+  assert.equal(body.id, 'msg_orch_1_start_2'); assert.equal(body.delivery, 'queue');
+  assert.match(body.text, /Issue \(contract\):/);
+  assert.deepEqual(Object.keys(body).sort(), ['delivery', 'id', 'text']);
+});

@@ -18,6 +18,15 @@ OpenCode V2 owns sessions and queued prompts. There is no runner state file.
   The GitHub credential needs Issues/PR/comment/status writes, and `workflow`
   scope when publishing the required CI workflow.
 
+Use the installed V2 API contract for integration details, without web access:
+
+```sh
+opencode2 api GET /openapi.json | jq '.paths["/api/session"].post'
+```
+
+Read-only GET probes can check response shapes. Keep session creation, prompting,
+and deletion in fake-backed tests until a live smoke run is explicitly authorized.
+
 ## Commands
 
 ```sh
