@@ -26,7 +26,7 @@ CI        --green, no review due-->             SMOKE    (worker, in its PR chec
 REVIEW    --clean-->                            SMOKE
 REVIEW    --findings, round < cap-->            FIXING
 REVIEW    --findings, round = cap-->            FIXING (then CI, then SMOKE; no new round)
-REVIEW    --worker cannot fix-->                ESCALATED
+REVIEW    --worker cannot fix-->                ESCALATED (orchestrator, on asks/stopped notice)
 SMOKE     --same-PR PASS exists-->              READY    (CI green on current head)
 SMOKE     --fail (1st)-->                       FIXING
 SMOKE     --fail (2nd)-->                       ESCALATED
