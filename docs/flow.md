@@ -28,7 +28,7 @@ CI        --green, no review due-->             SMOKE    (worker, in its PR chec
 REVIEW    --clean-->                            SMOKE
 REVIEW    --findings, round < cap-->            FIXING
 REVIEW    --findings, round = cap-->            FIXING (then CI, then SMOKE; no new round)
-REVIEW    --worker cannot fix-->                ESCALATED
+REVIEW    --worker cannot fix-->                ESCALATED (orchestrator, on asks/stopped notice)
 SMOKE     --same-PR PASS exists-->              READY    (CI green on current head)
 SMOKE     --fail (1st)-->                       FIXING
 SMOKE     --fail (2nd)-->                       ESCALATED
@@ -52,8 +52,7 @@ any       --session running, no new head 20m-->  notify orchestrator (again ever
   there is no extra review of the fix. T1/T2 work reverts
   with `git revert` by definition, so an unreviewed fix is a bounded risk.
 - **PR reviewers per tier:** T1 and T2 get the GPT reviewer; T3 gets the GPT and
-  Opus reviewers in parallel, independent of each other. Both families differ from
-  the default worker (GLM).
+  Opus reviewers in parallel, independent of each other.
   Reviewers use [`prompts/pr-review.md`](../prompts/pr-review.md).
 - **Merge:** on READY the runner starts a fresh merge agent. It merges the PR,
   adopts the merged `main` in the operator checkout, applies any local adoption
