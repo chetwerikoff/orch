@@ -120,7 +120,7 @@ Its findings go through the editor dispositions in
 Work in the assigned isolated worktree from the current Issue and exact target.
 Run the task's checks and affected tests; older-head results do not prove the
 current head. The [execution flow](docs/flow.md) owns runner transitions,
-current-head CI → smoke → review, round caps, and relaunch behavior. Worker
+current-head CI → review → smoke, round caps, and relaunch behavior. Worker
 completion is the PR leaving draft; a report cannot substitute for it.
 
 Workers do not merge on implementation completion. Merge requires a direct user

@@ -23,14 +23,17 @@ Out: <what must not change, if not obvious>
 1. <testable statement>
 2. ...
 
-```smoke
-<shell commands, one per line, run by the runner at the PR head in a clean
-worktree; exit code 0 = pass>
+```smoke-test-plan
+- action: <what the worker does, with entrypoint and environment> | expected: <observable result>
+- action: ... | expected: ...
 ```
 ````
 
-- **Smoke** is executable: the runner runs these commands and only the exit code
-  counts. For text-only changes write `not-applicable: <reason>` instead.
+- **Smoke** scenarios describe executable behaviour; the worker runs them and
+  publishes the report ([flow](flow.md#smoke)). For documentation, policy,
+  prompt, or skill text only, the fence holds `not-applicable: true` and a
+  one-line `reason: <text>` instead. Put entrypoint and environment inside the
+  `action` text, not as separate lines.
 - A check that no stale term remains is an acceptance criterion with the exact
   `rg` command and the expected empty result, not a smoke line.
 - Tier rules: [tiering](tiering.md).
