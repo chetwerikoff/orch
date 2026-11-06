@@ -5,11 +5,11 @@ export type Review = { head: string; reviewer: string; round: number; result: 'F
 export type Smoke = { head: string; result: 'PASS' | 'FAIL' | 'BLOCKED'; text: string };
 export type Facts = {
   number: number; now: number; tier: 'T1' | 'T2' | 'T3';
-  worker?: Session; merge?: Session; requests: Request[];
+  worker?: Session; workerIDs?: string[]; merge?: Session; requests: Request[];
   localHead?: string; commitTime?: number; seen: string[];
   pr?: { number: number; head: string; draft: boolean; merged: boolean; behind: boolean; conflict: boolean };
   ci: 'pending' | 'success' | 'failure'; reviews: Review[]; smokes: Smoke[];
-  statuses: Record<string, string>; blocked?: string; escalated?: boolean;
+  statuses: Record<string, string>; blocked?: string; escalated?: boolean; smokeStarted?: boolean;
 };
 export type Action =
   | { kind: 'none' }
@@ -52,7 +52,7 @@ export function decide(f: Facts): Decision {
   let d: Decision;
   const p = f.pr;
   if (p?.merged) return out('MERGED', { kind: 'finish' });
-  if (f.escalated) return out('ESCALATED');
+  if (f.escalated) return out('ESCALATED', { kind: 'finish' });
   if (f.blocked) return out('ESCALATED', { kind: 'escalate', reason: f.blocked });
   if (!p || p.draft) d = out('WORKING');
   else if (f.ci === 'failure') d = prompt('FIXING', 'ci', `Fix failing CI on PR #${p.number}, head ${p.head}; push the fix.`);
@@ -61,7 +61,7 @@ export function decide(f: Facts): Decision {
     const reviewers = f.tier === 'T3' ? ['gpt', 'opus'] : ['gpt'];
     const cap = f.tier === 'T3' ? 2 : 1;
     const round = Math.max(0, ...f.reviews.map(r => r.round));
-    const last = f.reviews.filter(r => r.round === round);
+    const last = [...new Map(f.reviews.filter(r => r.round === round).map(r => [r.reviewer, r])).values()];
     const complete = reviewers.every(name => last.some(r => r.reviewer === name));
     const current = last.every(r => r.head === p.head);
     const findings = last.some(r => r.result === 'FINDINGS');
@@ -69,12 +69,13 @@ export function decide(f: Facts): Decision {
     const failure = f.smokes.filter(s => s.result !== 'PASS');
     const latestFailure = failure.at(-1);
     // Once smoke has started, its fixes never open another review round.
-    if (!f.smokes.length && (!round || (!complete) || (!current && round < cap))) {
+    const smokeStarted = f.smokeStarted || f.smokes.length > 0;
+    if (!smokeStarted && (!round || (!complete) || (!current && round < cap))) {
       const next = !round ? 1 : !complete ? round : round + 1;
       const done = f.reviews.filter(r => r.round === next && r.head === p.head);
       const missing = reviewers.filter(name => !done.some(r => r.reviewer === name));
       d = out('REVIEW', { kind: 'review', round: next, reviewers: missing });
-    } else if (!f.smokes.length && current && findings) {
+    } else if (!smokeStarted && current && findings) {
       d = prompt('FIXING', `review_${round}`, `Apply round ${round} orch-review findings on PR #${p.number} (head ${p.head}); push fixes, or decline findings with a one-line PR comment.`);
     } else if (latestFailure?.result === 'BLOCKED') {
       d = out('ESCALATED', { kind: 'escalate', reason: `Smoke blocked: ${latestFailure.text}` });

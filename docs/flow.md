@@ -6,6 +6,8 @@ needed. Agents keep no workflow memory between calls.
 
 ## Runner
 
+Commands and timer setup: [runner.md](runner.md).
+
 - Runs every few minutes (and once on demand). Stateless: each run derives every
   active Issue's stage from GitHub facts and takes at most one next action per
   Issue.
