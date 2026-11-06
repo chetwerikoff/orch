@@ -50,6 +50,7 @@ READY     --behind / conflict-->            FIXING
 - **PR reviewers per tier:** T1 and T2 get the GPT reviewer; T3 gets the GPT and
   Opus reviewers in parallel, independent of each other. Both families differ from
   the default worker (GLM).
+  Reviewers use [`prompts/pr-review.md`](../prompts/pr-review.md).
 - **Merge:** on READY the runner starts a fresh merge agent. It merges the PR,
   adopts the merged `main` in the operator checkout, applies any local adoption
   steps, and removes the worker's worktree.
