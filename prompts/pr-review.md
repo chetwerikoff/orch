@@ -81,4 +81,5 @@ For each material finding give the same fields as
 Evidence includes exact-head file:line references and the concrete trigger and
 harm. Keep recommendations proportional and outcome-focused. State the reviewed
 PR/head and any actual coverage limitation. If coverage is complete and there are
-no material findings, say `NO_FINDINGS`.
+no material findings, make `NO_FINDINGS` the last line of the review, after any
+summary.
