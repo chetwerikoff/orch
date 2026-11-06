@@ -136,3 +136,7 @@ and let the orchestrator explicitly call `start <N>` when appropriate.
 
 No merge, cleanup, timer installation, or operator-checkout adoption happens
 merely by installing these files. The merge agent owns adoption and cleanup.
+
+Worker inability is not a runner-detected escalation. A worker asks or stops;
+the runner sends the corresponding notice. The orchestrator decides whether to
+remove `orch:active`, add `orch:escalated`, and post `orch-escalation`.

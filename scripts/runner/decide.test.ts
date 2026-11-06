@@ -50,7 +50,7 @@ test('smoke fixes bypass review, later heads reuse same-PR PASS, failures escala
   assert.equal(decide(f).stage, 'READY');
   assert.equal(decide(facts({ ...reviewed, smokes: [{ ...failed, result: 'BLOCKED' }] })).stage, 'ESCALATED');
 });
-test('READY merge identity, drift, merged cleanup, blocked worker', () => {
+test('READY merge identity, drift and merged cleanup', () => {
   const f = facts({ ...reviewed, smokes: [{ head: 'abc', result: 'PASS', text: 'ok' }] });
   assert.equal(decide(f).action.kind, 'merge');
   f.merge = { id: 'ses_orch_4_merge_abc', active: true, created: f.now };
@@ -59,7 +59,19 @@ test('READY merge identity, drift, merged cleanup, blocked worker', () => {
   f.pr!.behind = true; assert.equal(decide(f).stage, 'FIXING');
   f.pr!.behind = false; f.pr!.conflict = true; assert.equal(decide(f).stage, 'FIXING');
   f.pr!.merged = true; assert.equal(decide(f).action.kind, 'finish');
-  assert.equal(decide(facts({ blocked: 'cannot fix' })).stage, 'ESCALATED');
+});
+test('worker inability is an asks/stopped notice, never a runner escalation', () => {
+  const f = facts({ reviews: [{ ...clean, result: 'FINDINGS' }], statuses: { 'orch-review/gpt': 'failure' },
+    worker: { id: 'ses_orch_4', active: false, created: 0, idle: 100 } });
+  let d = decide(f);
+  assert.equal(d.stage, 'FIXING'); assert.equal(d.action.kind, 'notify');
+  if (d.action.kind === 'notify') assert.match(d.action.text, /stopped 100/);
+  f.requests.push({ id: 'form_cannot_fix', session: 'ses_orch_4', text: 'Cannot fix without an operator decision' });
+  d = decide(f); assert.equal(d.action.kind, 'notify');
+  if (d.action.kind === 'notify') { assert.match(d.action.text, /asks form_cannot_fix/); f.seen.push(d.action.id); }
+  assert.equal(decide(f).action.kind, 'none');
+  f.escalated = true;
+  assert.deepEqual(decide(f), { stage: 'ESCALATED', action: { kind: 'finish' } });
 });
 test('all notices dedupe; requests precede stopped; no-progress repeats only next period', () => {
   const f = facts({ pr: undefined, worker: { id: 'ses_orch_4', active: false, created: 0, idle: 100 } });

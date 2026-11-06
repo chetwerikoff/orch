@@ -9,7 +9,7 @@ export type Facts = {
   localHead?: string; commitTime?: number; seen: string[];
   pr?: { number: number; head: string; draft: boolean; merged: boolean; behind: boolean; conflict: boolean };
   ci: 'pending' | 'success' | 'failure'; reviews: Review[]; smokes: Smoke[];
-  statuses: Record<string, string>; blocked?: string; escalated?: boolean; smokeStarted?: boolean;
+  statuses: Record<string, string>; escalated?: boolean; smokeStarted?: boolean;
 };
 export type Action =
   | { kind: 'none' }
@@ -53,7 +53,6 @@ export function decide(f: Facts): Decision {
   const p = f.pr;
   if (p?.merged) return out('MERGED', { kind: 'finish' });
   if (f.escalated) return out('ESCALATED', { kind: 'finish' });
-  if (f.blocked) return out('ESCALATED', { kind: 'escalate', reason: f.blocked });
   if (!p || p.draft) d = out('WORKING');
   else if (f.ci === 'failure') d = prompt('FIXING', 'ci', `Fix failing CI on PR #${p.number}, head ${p.head}; push the fix.`);
   else if (f.ci !== 'success') d = out('CI');
