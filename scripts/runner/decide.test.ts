@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { decide, shouldReadGitHub, messageID } from './decide.ts';
+import { decide, shouldReadGitHub, messageID, queueNotice } from './decide.ts';
 import type { Facts } from './decide.ts';
 
 export function facts(patch: Partial<Facts> = {}): Facts {
@@ -10,6 +10,20 @@ export function facts(patch: Partial<Facts> = {}): Facts {
 }
 const clean = { head: 'abc', round: 1, reviewer: 'gpt', result: 'NO_FINDINGS' as const, text: 'NO_FINDINGS' };
 const reviewed = { reviews: [clean], statuses: { 'orch-review/gpt': 'success' } };
+test('queue notice is pure, sorted, filtered, slot-limited and deduped by ready set and active count', () => {
+  const issue = (number: number, labels = ['orch:ready'], state = 'open') => ({ number, title: `Task ${number}`, state, labels: labels.map(name => ({ name })) });
+  const ready = [issue(5), issue(3), issue(8, ['orch:ready', 'orch:active']), issue(9, ['orch:ready', 'orch:escalated']), issue(10, ['orch:ready'], 'closed'), issue(11, []), { ...issue(12), pull_request: {} }];
+  const n = queueNotice(ready, 1, []);
+  assert.equal(n.kind, 'notify');
+  if (n.kind !== 'notify') return;
+  assert.equal(n.id, 'msg_orch_0_queue_3-5_a1');
+  assert.equal(n.text, 'orch-notify #0 queue 3-5_a1\n#3 Task 3; #5 Task 5');
+  assert.deepEqual(queueNotice(ready, 1, [n.id]), { kind: 'none' });
+  assert.deepEqual(queueNotice(ready, 2, []), { kind: 'none' });
+  assert.deepEqual(queueNotice([], 0, []), { kind: 'none' });
+  assert.deepEqual(queueNotice(ready, 0, [n.id]), { ...n, id: 'msg_orch_0_queue_3-5_a0', text: n.text.replace('a1', 'a0') });
+  assert.deepEqual(queueNotice([issue(3)], 1, [n.id]), { ...n, id: 'msg_orch_0_queue_3_a1', text: 'orch-notify #0 queue 3_a1\n#3 Task 3' });
+});
 test('draft CI-done is idle-only, once per head, and precedes stopped notices', () => {
   for (const ci of ['success', 'failure'] as const) {
     const f = facts({ ci, worker: { id: 'ses_orch_4', active: false, created: 0, idle: 100 } });

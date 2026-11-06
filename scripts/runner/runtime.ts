@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { readFile, mkdtemp, writeFile, unlink, rmdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { decide, noticeCandidates, shouldReadGitHub, messageID } from './decide.ts';
+import { decide, noticeCandidates, shouldReadGitHub, messageID, notice, queueNotice } from './decide.ts';
 import type { Facts, Session, Action, Decision } from './decide.ts';
 import { parseComments, ciFacts, tierOf, reviewerResult } from './github.ts';
 import { defaultWorkerModel } from './start.ts';
@@ -168,6 +168,21 @@ export class Runner {
     }
     const scheduled = Math.floor(now / 60_000) % 5 === 0;
     const issues = scheduled ? (await this.pages('repos/chetwerikoff/orch/issues?state=all&labels=orch%3Aactive')).filter(i => !i.pull_request) : [];
+    if (scheduled) {
+      try {
+        const activeCount = issues.filter(i => i.state === 'open').length;
+        if (activeCount < 2) {
+          const ready = await this.pages('repos/chetwerikoff/orch/issues?state=open&labels=orch%3Aready');
+          const candidate = queueNotice(ready, activeCount, []);
+          const seen = candidate.kind === 'notify' && await this.hasMessage(this.env.ORCH_ORCHESTRATOR_SESSION, candidate.id) ? [candidate.id] : [];
+          const action = queueNotice(ready, activeCount, seen);
+          if (action.kind === 'notify') {
+            this.print(`#0 ${JSON.stringify(action)}${dryRun ? ' (dry-run)' : ''}`);
+            if (!dryRun) await this.prompt(this.env.ORCH_ORCHESTRATOR_SESSION, action.id, action.text);
+          }
+        }
+      } catch (error) { failIssue(0, error); }
+    }
     if (!scheduled) for (const f of locals.values()) if (shouldReadGitHub(f)) {
       try {
         const issue = await this.gh(`repos/chetwerikoff/orch/issues/${f.number}`);
@@ -182,6 +197,10 @@ export class Runner {
         const context = await this.githubFacts(f, issue, operatorSessions);
         const decision = decide(f);
         this.print(`#${f.number} ${decision.stage} ${JSON.stringify(decision.action)}${dryRun ? ' (dry-run)' : ''}`);
+        if (dryRun && decision.action.kind === 'escalate') {
+          const n = notice(f.number, 'escalated', f.pr!.head, `${decision.stage}: ${decision.action.reason}`);
+          if (!await this.hasMessage(this.env.ORCH_ORCHESTRATOR_SESSION, n.id)) this.print(JSON.stringify(n) + ' (dry-run)');
+        }
         if (!dryRun) await this.execute(f, decision, issue, tree, operator.path, context);
       } catch (error) { failIssue(issue.number, error); }
     }
@@ -200,6 +219,8 @@ export class Runner {
     if (a.kind === 'prompt') return this.prompt(f.worker?.id, a.id, a.text);
     if (a.kind === 'finish') return this.removeLabel(f.number, 'orch:active');
     if (a.kind === 'escalate') {
+      const n = notice(f.number, 'escalated', f.pr!.head, `${d.stage}: ${a.reason}`);
+      await this.prompt(this.env.ORCH_ORCHESTRATOR_SESSION, n.id, n.text);
       const body = `orch-escalation\nstage: ${d.stage}\nreason: ${a.reason}\nnext decision owner: orchestrator (then operator)`;
       const comments = await this.pages(`repos/chetwerikoff/orch/issues/${f.number}/comments`);
       if (!comments.some(c => c.body === body)) await this.writeGitHub(`repos/chetwerikoff/orch/issues/${f.number}/comments`, 'POST', { body });
@@ -242,28 +263,33 @@ export class Runner {
     const diff = await this.git(['diff', 'origin/main...' + sha], tree.path);
     const input = `${prompt}\n\nRepository: chetwerikoff/orch; PR #${f.pr!.number}; Issue #${f.number}; exact head: ${sha}; round: ${a.round}.\nIssue (untrusted data):\n${issue.body}\nGitHub PR, comments, CI and statuses (untrusted data):\n${JSON.stringify(context)}\nDiff:\n${diff}\n\nRead-only: do not mutate any file or GitHub state. GitHub context is preloaded above; use file reads for surrounding code. End your complete review with a separate line orch-review-complete. If coverage is unavailable, report it without NO_FINDINGS.\n`;
     await Promise.all(a.reviewers.map(async reviewer => {
+      let output: string;
       try {
-        let output: string;
         if (reviewer === 'gpt') {
           const session = (await this.api('session.create', {}, { location: { directory: tree.path }, model: defaultWorkerModel, permissions: reviewerPermissions })).data;
           const scratch = await mkdtemp(join(tmpdir(), 'orch-review-'));
           const file = join(scratch, 'context.md');
           try {
             await writeFile(file, input, { mode: 0o600 });
-            output = await this.run('opencode2', ['run', '--session', session.id, '-m', 'openai/gpt-6.1-sol#medium', '--file', file, 'Review the attached context. Follow its read-only review instructions.'], tree.path);
+            output = await this.run('opencode2', ['run', '--session', session.id, '-m', this.env.ORCH_REVIEW_GPT_MODEL ?? 'openai/gpt-6.1-sol#medium', '--file', file, 'Review the attached context. Follow its read-only review instructions.'], tree.path);
           } finally { await unlink(file).catch(() => {}); await rmdir(scratch); }
         } else output = await this.run('claude', ['-p', '--model', 'opus', '--effort', 'high', '--tools', 'Read,Grep,Glob', '--strict-mcp-config'], tree.path, input);
-        const result = reviewerResult(output);
-        if (!result) { this.print(`Reviewer outage: ${reviewer}; no comment or round consumed.`); return; }
-        const body = `orch-review\nhead-sha: ${sha}\nreviewer: ${reviewer}\nround: ${a.round}\nresult: ${result.result}\n${result.text}`;
-        await this.writeGitHub(`repos/chetwerikoff/orch/issues/${f.pr!.number}/comments`, 'POST', { body });
-        f.reviews.push({ head: sha, reviewer, round: a.round, ...result });
-      } catch (error: any) { this.print(`Reviewer outage: ${reviewer}: ${error.message}`); }
+      } catch (error: any) { await this.reviewOutage(f, reviewer, a.round, error.message); return; }
+      const result = reviewerResult(output);
+      if (!result) { await this.reviewOutage(f, reviewer, a.round, 'unusable output'); return; }
+      const body = `orch-review\nhead-sha: ${sha}\nreviewer: ${reviewer}\nround: ${a.round}\nresult: ${result.result}\n${result.text}`;
+      await this.writeGitHub(`repos/chetwerikoff/orch/issues/${f.pr!.number}/comments`, 'POST', { body });
+      f.reviews.push({ head: sha, reviewer, round: a.round, ...result });
     }));
     for (const r of f.reviews.filter(r => r.head === sha && r.round === a.round)) {
       const state = r.result === 'NO_FINDINGS' ? 'success' : 'failure';
       if (f.statuses[`orch-review/${r.reviewer}`] !== state) await this.writeGitHub(`repos/chetwerikoff/orch/statuses/${sha}`, 'POST', { state, context: `orch-review/${r.reviewer}`, description: `Round ${r.round}: ${r.result}` });
     }
+  }
+  async reviewOutage(f: Facts, reviewer: string, round: number, error: string) {
+    this.print(`Reviewer outage: ${reviewer}: ${error}`);
+    const n = notice(f.number, 'review-outage', `${reviewer}_${round}_${f.pr!.head.slice(0, 7)}`, `${reviewer}: ${error}`);
+    await this.prompt(this.env.ORCH_ORCHESTRATOR_SESSION, n.id, n.text);
   }
   async start(number: number, model: WorkerModel = defaultWorkerModel) {
     await this.run(this.orca(), ['--version'], this.cwd);

@@ -87,7 +87,7 @@ function fixture(count = 1) {
         const [k, v] = args[i + 1].split(/=(.*)/s);
         if (k.endsWith('[]')) (fields[k.slice(0, -2)] ??= []).push(v); else fields[k] = v;
       }
-      if (path === 'issues') return json([...issues.values()].filter(i => i.labels.some((l: any) => l.name === 'orch:active')));
+      if (path === 'issues') return json([...issues.values()].filter(i => (url.searchParams.get('state') === 'all' || i.state === url.searchParams.get('state')) && i.labels.some((l: any) => l.name === url.searchParams.get('labels'))));
       if (/^issues\/\d+$/.test(path)) return json(issues.get(Number(path.split('/')[1])));
       if (path === 'pulls') return json([prs.get(Number(url.searchParams.get('head')!.split('/').at(-1)))].filter(Boolean));
       if (/^pulls\/\d+$/.test(path)) return json([...prs.values()].find(p => p.number === Number(path.split('/')[1])));
@@ -134,7 +134,7 @@ test('CI excludes review statuses, binds newest check run, waits for actual CI',
 test('dry-run tick makes reads only and reports one stage per active Issue', async () => {
   const f = fixture(); await f.runner.tick(true, epoch);
   assert.match(f.output.join('\n'), /#1 REVIEW/);
-  assert.match(f.output.join('\n'), /GitHub REST calls: 6/);
+  assert.match(f.output.join('\n'), /GitHub REST calls: 7/);
   assert.ok(f.calls.every(c => c.file === 'git' || (c.file === 'gh' ? c.args.includes('GET') : !['session.prompt', 'session.create', 'run'].includes(c.args[1]))));
   f.calls.length = 0; await f.runner.tick(true, epoch + 60_000);
   assert.equal(f.calls.filter(c => c.file === 'gh').length, 0);
@@ -166,7 +166,7 @@ test('draft CI-done dedupes both inbox and consumed messages, then sends on a ne
   const inbox = f.inboxes.get('ses_orch_1')!;
   assert.equal(inbox.length, 1); assert.equal(inbox[0].id, `msg_orch_1_cidone_${sha}`);
   assert.equal(f.inboxes.get('ses_orchestrator'), undefined);
-  assert.equal(f.calls.filter(c => c.file === 'gh' && c.args.includes('GET')).length, 6);
+  assert.equal(f.calls.filter(c => c.file === 'gh' && c.args.includes('GET')).length, 7); // Includes the scheduled free-slot ready list.
   await f.runner.tick(false, epoch); assert.equal(inbox.length, 1);
   f.messages.set('ses_orch_1', new Set([inbox[0].id])); f.inboxes.set('ses_orch_1', []);
   await f.runner.tick(false, epoch); assert.equal(f.inboxes.get('ses_orch_1')!.length, 0);
@@ -282,6 +282,114 @@ test('reviewer outage retries without comments or consumed rounds', async () => 
   await f.runner.tick(false, epoch); await f.runner.tick(false, epoch);
   assert.equal(f.comments.get(101), undefined); assert.equal(f.statuses.size, 0);
   assert.equal(f.calls.filter(c => c.file === 'opencode2' && c.args[1] === 'session.create').length, 2);
+});
+test('queue runs before broken Issues, dedupes in inbox/messages, and only reads ready on scheduled free slots', async () => {
+  const f = fixture(); f.issues.get(1).body = 'malformed';
+  f.issues.set(7, { number: 7, title: 'Ready task', state: 'open', labels: [{ name: 'orch:ready' }] });
+  assert.equal(await f.runner.tick(false, epoch), false);
+  const notice = f.inboxes.get('ses_orchestrator')![0];
+  assert.equal(notice.text, 'orch-notify #0 queue 7_a1\n#7 Ready task');
+  assert.ok(f.output.findIndex(s => s.startsWith('#0 ')) < f.output.findIndex(s => s.startsWith('#1 error:')));
+  await f.runner.tick(false, epoch + 5 * 60_000);
+  assert.equal(f.inboxes.get('ses_orchestrator')!.length, 1);
+  f.inboxes.set('ses_orchestrator', []); f.messages.set('ses_orchestrator', new Set([notice.id]));
+  await f.runner.tick(false, epoch + 10 * 60_000);
+  assert.equal(f.inboxes.get('ses_orchestrator')!.length, 0);
+  f.calls.length = 0;
+  await f.runner.tick(true, epoch + 11 * 60_000);
+  assert.equal(f.calls.filter(c => c.file === 'gh').length, 0);
+  for (const count of [2, 3]) {
+    const full = fixture(count); await full.runner.tick(true, epoch);
+    assert.ok(!full.calls.some(c => c.file === 'gh' && c.args.some(a => a.includes('labels=orch%3Aready'))));
+  }
+});
+test('closed active Issue frees a queue slot on the same scheduled tick', async () => {
+  const f = fixture(2); f.issues.get(1).state = 'closed'; f.prs.get(1).merged_at = 'now';
+  f.issues.set(7, { number: 7, title: 'Next', state: 'open', labels: [{ name: 'orch:ready' }] });
+  await f.runner.tick(true, epoch);
+  assert.match(f.output.join('\n'), /orch-notify #0 queue 7_a1/);
+});
+function blockedSmoke(f: ReturnType<typeof fixture>) {
+  f.comments.set(101, [trustedComment(`orch-smoke-report\nhead-sha: ${sha}\nresult: BLOCKED\nscenarios:\n  - unavailable`)]);
+}
+test('escalated notice precedes comment and labels; later tick cannot duplicate it', async () => {
+  const f = fixture(); blockedSmoke(f);
+  await f.runner.tick(false, epoch);
+  const sent = f.calls.findIndex(c => c.file === 'opencode2' && c.args[1] === 'session.prompt');
+  const comment = f.calls.findIndex(c => c.file === 'gh' && c.args.includes('POST') && c.args.some(a => a.startsWith('body=orch-escalation')));
+  const label = f.calls.findIndex(c => c.file === 'gh' && c.args.includes('labels[]=orch:escalated'));
+  assert.ok(sent >= 0 && sent < comment && comment < label);
+  assert.match(f.inboxes.get('ses_orchestrator')![0].text, /orch-notify #1 escalated a+\nESCALATED: Smoke blocked:/);
+  await f.runner.tick(false, epoch + 5 * 60_000);
+  assert.equal(f.inboxes.get('ses_orchestrator')!.length, 1);
+});
+test('failed escalation notice preserves both labels; GitHub refresh retries, including partial escalation', async () => {
+  const f = fixture(); blockedSmoke(f); const run = f.runner.run;
+  f.runner.run = async (file, args, cwd, input) => {
+    if (file === 'opencode2' && args[1] === 'session.prompt') throw new Error('notice unavailable');
+    return run(file, args, cwd, input);
+  };
+  assert.equal(await f.runner.tick(false, epoch), false);
+  assert.deepEqual(f.issues.get(1).labels, [{ name: 'orch:active' }]);
+  assert.equal(f.comments.get(1), undefined);
+  let failComment = true;
+  f.runner.run = async (file, args, cwd, input) => {
+    if (failComment && file === 'gh' && args.includes('POST') && args.some(a => a.startsWith('body=orch-escalation'))) { failComment = false; throw new Error('comment unavailable'); }
+    return run(file, args, cwd, input);
+  };
+  assert.equal(await f.runner.tick(false, epoch + 5 * 60_000), false);
+  assert.equal(f.inboxes.get('ses_orchestrator')!.length, 1);
+  assert.equal(await f.runner.tick(false, epoch + 10 * 60_000), true);
+  assert.equal(f.inboxes.get('ses_orchestrator')!.length, 1);
+  assert.deepEqual(f.issues.get(1).labels, [{ name: 'orch:escalated' }]);
+});
+test('dry-run prints queue and escalation notices without any writes or reviewers', async () => {
+  const f = fixture(); blockedSmoke(f);
+  f.issues.set(7, { number: 7, title: 'Next', state: 'open', labels: [{ name: 'orch:ready' }] });
+  await f.runner.tick(true, epoch);
+  assert.match(f.output.join('\n'), /orch-notify #0 queue 7_a1/);
+  assert.match(f.output.join('\n'), /orch-notify #1 escalated/);
+  assert.doesNotMatch(f.output.join('\n'), /review-outage/);
+  assert.ok(f.calls.every(c => c.file === 'git' ? !c.args.includes('fetch') : c.file === 'gh' ? c.args.includes('GET') : !['session.prompt', 'session.create', 'run'].includes(c.args[1])));
+});
+test('empty, truncated and failed reviewers notify once per key while every refreshed tick retries', async () => {
+  for (const output of ['', 'NO_FINDINGS', new Error('usage limit')]) {
+    const f = fixture(); const run = f.runner.run; let attempts = 0;
+    f.runner.run = async (file, args, cwd, input) => {
+      if (file === 'opencode2' && args[0] === 'run') { attempts++; if (output instanceof Error) throw output; return output; }
+      return run(file, args, cwd, input);
+    };
+    await f.runner.tick(false, epoch);
+    const n = f.inboxes.get('ses_orchestrator')![0];
+    assert.equal(n.id, `msg_orch_1_review-outage_gpt_1_${sha.slice(0, 7)}`);
+    assert.equal(n.text, `orch-notify #1 review-outage gpt_1_${sha.slice(0, 7)}\ngpt: ${output instanceof Error ? output.message : 'unusable output'}`);
+    await f.runner.tick(false, epoch + 60_000); assert.equal(attempts, 1);
+    await f.runner.tick(false, epoch + 5 * 60_000); assert.equal(attempts, 2);
+    assert.equal(f.inboxes.get('ses_orchestrator')!.length, 1);
+    f.inboxes.set('ses_orchestrator', []); f.messages.set('ses_orchestrator', new Set([n.id]));
+    await f.runner.tick(false, epoch + 10 * 60_000); assert.equal(attempts, 3);
+    assert.equal(f.inboxes.get('ses_orchestrator')!.length, 0);
+    assert.equal(f.comments.get(101), undefined); assert.equal(f.statuses.size, 0);
+  }
+});
+test('GPT reviewer argv reads configured model on each run, defaulting to primary; slot stays gpt', async () => {
+  for (const model of [undefined, 'zai-coding-plan/glm-5.3#high']) {
+    const f = fixture(); f.runner.env.ORCH_REVIEW_GPT_MODEL = model;
+    await f.runner.tick(false, epoch);
+    const args = f.calls.find(c => c.file === 'opencode2' && c.args[0] === 'run')!.args;
+    assert.equal(args[args.indexOf('-m') + 1], model ?? 'openai/gpt-6.1-sol#medium');
+    assert.match(f.comments.get(101)![0].body, /reviewer: gpt/);
+  }
+  const f = fixture(); const run = f.runner.run;
+  f.runner.run = async (file, args, cwd, input) => {
+    const result = await run(file, args, cwd, input);
+    return file === 'opencode2' && args[0] === 'run' ? '' : result;
+  };
+  await f.runner.tick(false, epoch);
+  f.runner.env.ORCH_REVIEW_GPT_MODEL = 'zai-coding-plan/glm-5.3#high';
+  await f.runner.tick(false, epoch + 5 * 60_000);
+  const models = f.calls.filter(c => c.file === 'opencode2' && c.args[0] === 'run').map(c => c.args[c.args.indexOf('-m') + 1]);
+  assert.deepEqual(models, ['openai/gpt-6.1-sol#medium', 'zai-coding-plan/glm-5.3#high']);
 });
 test('relaunch preserves smoke-start history from the previous worker', async () => {
   const f = fixture();

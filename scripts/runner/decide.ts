@@ -22,6 +22,16 @@ export type Action =
 export type Decision = { stage: Stage; action: Action };
 const period = 20 * 60_000;
 export const messageID = (n: number, kind: string, key: string | number) => `msg_orch_${n}_${kind}_${key}`;
+export function notice(number: number, kind: string, key: string | number, facts: string): Extract<Action, { kind: 'notify' }> {
+  return { kind: 'notify', id: messageID(number, kind, key), text: `orch-notify #${number} ${kind} ${key}\n${facts.replace(/\s*\n\s*/g, ' ')}` };
+}
+export type QueueIssue = { number: number; title: string; state: string; labels: { name: string }[]; pull_request?: unknown };
+export function queueNotice(issues: QueueIssue[], activeCount: number, seen: string[]): Action {
+  const ready = issues.filter(i => i.state === 'open' && !i.pull_request && i.labels.some(l => l.name === 'orch:ready') && !i.labels.some(l => ['orch:active', 'orch:escalated'].includes(l.name))).sort((a, b) => a.number - b.number);
+  if (activeCount >= 2 || !ready.length) return { kind: 'none' };
+  const n = notice(0, 'queue', `${ready.map(i => i.number).join('-')}_a${activeCount}`, ready.map(i => `#${i.number} ${i.title}`).join('; '));
+  return seen.includes(n.id) ? { kind: 'none' } : n;
+}
 
 // These candidates also drive the free, local/V2-only read schedule.
 export function noticeCandidates(f: Pick<Facts, 'number' | 'now' | 'requests' | 'worker' | 'localHead' | 'commitTime'>) {
