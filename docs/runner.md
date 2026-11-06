@@ -31,17 +31,25 @@ and deletion in fake-backed tests until a live smoke run is explicitly authorize
 
 ```sh
 node scripts/runner/cli.ts start 12
+node scripts/runner/cli.ts start 12 --model zai-coding-plan/glm-5.3#high
 node scripts/runner/cli.ts tick --dry-run
 node --test scripts/runner
 ```
 
-`start <N>` admits an open Issue: it creates the Orca worktree if absent, verifies
+`start <N> [--model <providerID>/<modelID>[#<variant>]]` admits an open Issue:
+it creates the Orca worktree with `--no-parent` if absent (never inheriting the
+calling terminal's worktree lineage), verifies
 the exact `orch/<N>` branch, creates the worker session, queues the Issue prompt,
 opens a visible `opencode2 --session <id>` terminal, removes `orch:escalated`, and
 adds `orch:active`. An existing worktree is reused. Each explicit repeat creates
 the next worker session (`ses_orch_<N>`, then `ses_orch_<N>_2`, etc.), so it also
 recovers an interrupted start or resumes an escalated worker. It is not an
 automatic restart command: the orchestrator decides whether to call it.
+The default model is `openai/gpt-6.1-sol#medium`. An explicit `--model` applies to
+both the first start and relaunch; without `#variant`, no variant is sent.
+After a provider usage limit, the orchestrator uses
+`--model zai-coding-plan/glm-5.3#high`. There is no model auto-detection or retry
+change.
 
 `tick --dry-run` collects facts and prints each refreshed Issue's stage, its one
 proposed action, and the total GitHub REST calls. It does not launch agents, send

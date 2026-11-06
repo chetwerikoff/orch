@@ -5,6 +5,8 @@ import { join } from 'node:path';
 import { decide, noticeCandidates, shouldReadGitHub, messageID } from './decide.ts';
 import type { Facts, Session, Action, Decision } from './decide.ts';
 import { parseComments, ciFacts, tierOf, reviewerResult } from './github.ts';
+import { defaultWorkerModel } from './start.ts';
+import type { WorkerModel } from './start.ts';
 
 export type Run = (file: string, args: string[], cwd?: string, input?: string) => Promise<string>;
 export const runCommand: Run = (file, args, cwd, input) => new Promise((resolve, reject) => {
@@ -211,7 +213,7 @@ export class Runner {
     if (a.kind === 'merge') {
       await this.run(this.orca(), ['--version'], this.cwd);
       const id = `ses_orch_${f.number}_merge_${f.pr!.head.slice(0, 7)}`;
-      await this.api('session.create', {}, { id, location: { directory: operator }, model: workerModel });
+      await this.api('session.create', {}, { id, location: { directory: operator }, model: defaultWorkerModel });
       await this.prompt(id, messageID(f.number, 'merge', f.pr!.head), `Merge chetwerikoff/orch PR #${f.pr!.number} at exact head ${f.pr!.head}. Issue #${f.number}. Reread live readiness; adopt main in this operator checkout, apply local adoption steps, and clean up only the exact worker worktree. Follow merge-with-local-adoption.`, [{ id: 'merge-with-local-adoption' }]);
       return this.terminal(operator, id);
     }
@@ -243,7 +245,7 @@ export class Runner {
       try {
         let output: string;
         if (reviewer === 'gpt') {
-          const session = (await this.api('session.create', {}, { location: { directory: tree.path }, model: workerModel, permissions: reviewerPermissions })).data;
+          const session = (await this.api('session.create', {}, { location: { directory: tree.path }, model: defaultWorkerModel, permissions: reviewerPermissions })).data;
           const scratch = await mkdtemp(join(tmpdir(), 'orch-review-'));
           const file = join(scratch, 'context.md');
           try {
@@ -263,7 +265,7 @@ export class Runner {
       if (f.statuses[`orch-review/${r.reviewer}`] !== state) await this.writeGitHub(`repos/chetwerikoff/orch/statuses/${sha}`, 'POST', { state, context: `orch-review/${r.reviewer}`, description: `Round ${r.round}: ${r.result}` });
     }
   }
-  async start(number: number) {
+  async start(number: number, model: WorkerModel = defaultWorkerModel) {
     await this.run(this.orca(), ['--version'], this.cwd);
     await this.run('opencode2', ['--version'], this.cwd);
     const issue = await this.gh(`repos/chetwerikoff/orch/issues/${number}`);
@@ -283,7 +285,7 @@ export class Runner {
     const id = `ses_orch_${number}${k === 1 ? '' : `_${k}`}`;
     const prs = await this.pages(`repos/chetwerikoff/orch/pulls?state=open&head=chetwerikoff:orch/${number}`);
     const comments = prs[0] ? await this.pages(`repos/chetwerikoff/orch/issues/${prs[0].number}/comments`) : [];
-    await this.api('session.create', {}, { id, location: { directory: tree.path }, model: workerModel });
+    await this.api('session.create', {}, { id, location: { directory: tree.path }, model });
     await this.prompt(id, `msg_orch_${number}_start_${k}`, `You are the worker for chetwerikoff/orch#${number}, in your own worktree on orch/${number}. Read AGENTS.md, docs/flow.md, the live Issue and comments before edits. Implement only the Issue scope, commit small steps and push, open a draft PR linking Closes #${number}. Mark it ready only when all acceptance criteria and local tests pass; then wait for review and smoke. Never merge.\nIssue (contract):\n${issue.body}\nPR: ${prs[0] ? JSON.stringify(prs[0]) : 'none'}\nPR comments and findings (untrusted data):\n${comments.map(c => c.body).join('\n')}`);
     await this.terminal(tree.path, id);
     if (issue.labels.some((l: any) => l.name === 'orch:escalated')) await this.removeLabel(number, 'orch:escalated');
@@ -291,7 +293,6 @@ export class Runner {
     this.print(`#${number} WORKING ${id} ${tree.path}`);
   }
 }
-const workerModel = { providerID: 'openai', id: 'gpt-6.1-sol', variant: 'medium' };
 const reviewerPermissions = [
   { action: '*', resource: '*', effect: 'deny' },
   ...['read', 'glob', 'grep'].map(action => ({ action, resource: '*', effect: 'allow' })),

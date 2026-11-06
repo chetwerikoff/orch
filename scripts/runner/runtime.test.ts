@@ -5,6 +5,7 @@ import type { Run } from './runtime.ts';
 import { parseComments, ciState, ciFacts, reviewerResult, tierOf } from './github.ts';
 import { decide } from './decide.ts';
 import { facts } from './decide.test.ts';
+import { parseStartArgs } from './start.ts';
 
 const issueBody = '## Goal\nTest\n```complexity-tier\ntier: T2\nbecause: test\n```';
 const sha = 'a'.repeat(40);
@@ -223,6 +224,26 @@ test('start new branch and start after worktree-only crash both use base worker 
     await f.runner.start(1);
     assert.ok(f.sessions.some(s => s.id === 'ses_orch_1'));
     assert.equal(f.calls.filter(c => c.file === '/orca-cli' && c.args[0] === 'worktree' && c.args[1] === 'create').length, exists ? 0 : 1);
+    if (!exists) assert.ok(f.calls.find(c => c.file === '/orca-cli' && c.args[0] === 'worktree' && c.args[1] === 'create')!.args.includes('--no-parent'));
+  }
+});
+test('start parses default and explicit models, including optional variants', async () => {
+  const cases = [
+    { args: ['1'], model: { providerID: 'openai', id: 'gpt-6.1-sol', variant: 'medium' } },
+    { args: ['1', '--model', 'zai-coding-plan/glm-5.3#high'], model: { providerID: 'zai-coding-plan', id: 'glm-5.3', variant: 'high' } },
+    { args: ['1', '--model', 'zai-coding-plan/glm-5.3'], model: { providerID: 'zai-coding-plan', id: 'glm-5.3' } },
+  ];
+  for (const { args, model } of cases) {
+    const parsed = parseStartArgs(args); assert.deepEqual(parsed, { number: 1, model });
+    const f = fixture(); f.sessions.splice(1); f.trees.splice(1);
+    await f.runner.start(parsed.number, parsed.model);
+    await f.runner.start(parsed.number, parsed.model);
+    for (const id of ['ses_orch_1', 'ses_orch_1_2']) assert.deepEqual(f.sessions.find(s => s.id === id).model, model);
+  }
+  for (const args of [[], ['0'], ['-1'], ['1.5'], ['9007199254740992'], ['1', '--model'],
+    ['1', '--unknown', 'p/m'], ['1', '--model', 'p/m', 'extra'],
+    ...['model', '/model', 'provider/', 'p/m#', 'p/m#v#x', 'p /m', 'p/m#v x'].map(model => ['1', '--model', model])]) {
+    assert.throws(() => parseStartArgs(args), /Usage:/);
   }
 });
 test('three-Issue 30-minute dry-run schedule stays within 100 GitHub calls', async () => {
