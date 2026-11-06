@@ -9,6 +9,8 @@ T3 specs) in the orch primary checkout. [AGENTS.md](../AGENTS.md) owns the rules
    with an honest tier ([tiering](../docs/tiering.md): doubt goes down), then run
    [spec review](../docs/spec-review.md) for that tier: GPT reviewer, fresh Opus
    editor, fresh Opus lens (high). You never adjudicate findings on your own spec.
+   When the last stage has applied its edits and no operator question is open,
+   add the label `orch:ready`; that is the orchestrator's admission signal.
 2. **Defect classes, not single bugs.** Read `~/.local/state/orch/defect-log.md`
    (orchestrator and worker friction lines). Once a week, or when one class
    repeats three times, group the lines into classes and turn each real class into
