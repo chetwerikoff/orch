@@ -146,6 +146,8 @@ Load the matching named skill when available; its body owns the procedure.
 - Issue body: [`docs/issue-template.md`](docs/issue-template.md)
 - Task tiers: [`docs/tiering.md`](docs/tiering.md)
 - Spec review per tier: [`docs/spec-review.md`](docs/spec-review.md)
+- PR review: [`prompts/pr-review.md`](prompts/pr-review.md)
+- Root-cause investigation: [`prompts/investigate-root-cause.md`](prompts/investigate-root-cause.md)
 - Execution flow after the worker: [`docs/flow.md`](docs/flow.md)
 - Direct instruction precedence and blockers: [`docs/blocker-philosophy.md`](docs/blocker-philosophy.md)
 - Operational decision lenses: [`docs/first_principles_5_operational_framework.md`](docs/first_principles_5_operational_framework.md)
