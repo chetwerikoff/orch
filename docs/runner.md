@@ -13,8 +13,8 @@ OpenCode V2 owns sessions and queued prompts. There is no runner state file.
   Never set it to bare `orca` (on Linux that may be the screen reader).
 - `ORCH_ORCHESTRATOR_SESSION`: the exact existing V2 orchestrator session ID.
   Notices queue there; the runner never answers a form or permission request.
-- GitHub labels `orch:active` and `orch:escalated` must exist. Create them once
-  with `gh label create orch:active` and `gh label create orch:escalated` if needed.
+- GitHub labels `orch:ready`, `orch:active`, and `orch:escalated` must exist. Create
+  each once with `gh label create <label>` if needed.
   The GitHub credential needs Issues/PR/comment/status writes, and `workflow`
   scope when publishing the required CI workflow.
 
@@ -44,8 +44,9 @@ recovers an interrupted start or resumes an escalated worker. It is not an
 automatic restart command: the orchestrator decides whether to call it.
 
 `tick --dry-run` collects facts and prints each refreshed Issue's stage, its one
-proposed action, and the total GitHub REST calls. It does not launch agents, send
-prompts, post comments/statuses, edit labels, fetch refs, or change a checkout.
+proposed action, the queue/escalation notices it would send, and the total GitHub
+REST calls. No reviewer runs, so no `review-outage` can appear. It does not launch
+agents, send prompts, post comments/statuses, edit labels, fetch refs, or change a checkout.
 Errors remain failures. A non-refresh minute prints that no refresh is due; it
 does not invent a cached stage.
 
@@ -112,6 +113,16 @@ or have an unnoticed pending form/permission. Notice IDs are checked in both
 the orchestrator's messages and inbox. The latest worker suffix wins; old worker
 sessions are not supervised or restarted.
 
+Before processing refreshed Issues on scheduled ticks, the runner counts open
+Issues from the existing `orch:active` list. Only below the slot limit of 2
+([orchestrator duty 1](../prompts/orchestrator.md#duties)) does it list open
+`orch:ready` Issues. Ready candidates exclude `orch:active` and `orch:escalated`.
+A merged Issue is closed by its PR, freeing its slot on that same tick. An
+escalation frees its slot when `orch:active` is removed; the next scheduled read
+notices the queue. An individual Issue failure cannot block queue notification.
+The ordinary first-page cost adds one REST call below the slot limit, none
+otherwise; there is no queue read on non-scheduled ticks.
+
 For three Issues with a PR, the ordinary first-page read cost is 16 per scheduled
 tick (one Issue list, then PR discovery/detail, comments, checks, and statuses
 per Issue), or 96 in 30 minutes. Pagination and new idle/question reasons add
@@ -124,10 +135,39 @@ Review and smoke formats are owned by [flow.md](flow.md#review). Reviewer runs
 have read-only file tools, receive the exact Issue/PR/CI/comment context and
 `git diff origin/main...<head>`, and must finish with `orch-review-complete`.
 Missing completion, failed execution, or unusable verdict is an outage: no review
-comment is posted, and a later tick retries. Review comments bind the runner's
+comment is posted, and the next tick refreshing the Issue from GitHub retries
+without consuming a round. Review comments bind the runner's
 SHA, not anything the reviewer printed. A lost status write is repaired from the
 posted comment without rerunning the reviewer. A dirty or wrong-head checkout
 fails rather than resetting the worker's work.
+
+Each GPT review run reads `ORCH_REVIEW_GPT_MODEL`, defaulting to
+`openai/gpt-6.1-sol#medium`. After a usage-limit outage the orchestrator escalates;
+the architect can set `zai-coding-plan/glm-5.3#high` in the runner environment.
+There is no automatic switch. The runner still publishes the review comment and
+`orch-review/gpt` status under the `gpt` slot, including for the configured fallback.
+
+### Orchestrator notices
+
+All notices queue into `ORCH_ORCHESTRATOR_SESSION` with delivery `queue`, ID
+`msg_orch_<N>_<kind>_<key>`, and text `orch-notify #<N> <kind> <key>` followed by
+one facts line. An ID already in the session's messages or inbox is skipped; no
+separate dedup store is used. Existing worker notices are `asks` (request ID),
+`stopped` (idle timestamp), and `no-progress` (HEAD plus 20-minute period).
+
+- `escalated`: key = full PR head SHA; facts = stage and escalation reason.
+  Queued **before** the `orch-escalation` comment or either label change. Failure
+  leaves labels unchanged, so a later GitHub refresh retries the escalation.
+- `queue`: Issue number **0**; key = ready Issue numbers sorted ascending and
+  joined by `-`, then `_a<open active count>` (for example `3-5_a1`). Facts list
+  the ready numbers and titles. Computed only on scheduled ticks as above; the
+  orchestrator decides admission. There is no separate `merged` notice.
+- `review-outage`: emitted inside the review run for empty, truncated, or failed
+  reviewer output; key = `<reviewer>_<round>_<head sha7>`; facts = reviewer and
+  error, or `unusable output`. Sent once per key, without changing review retry
+  scheduling. There is no second reminder: the orchestrator inspects the cause
+  and escalates when it will not clear by itself. Runner errors remain failures,
+  not notices.
 
 Protocol comments are accepted only when GitHub reports the author association
 as `OWNER`, `MEMBER`, or `COLLABORATOR`; missing or other associations are ignored.
@@ -140,9 +180,9 @@ The runner queues work with head-keyed message IDs and checks both messages and
 inbox before sending. Pending questions take priority over work. Merge sessions
 are `ses_orch_<N>_merge_<sha7>` in the operator checkout. Existing active merge
 sessions are left alone; inactive unmerged ones escalate rather than restart.
-An escalation adds `orch:escalated`, posts the reason and next decision owner,
-then removes `orch:active`. Inspect the Issue and session, resolve the cause,
-and let the orchestrator explicitly call `start <N>` when appropriate.
+An escalation first queues its notice, posts the reason and next decision owner,
+adds `orch:escalated`, then removes `orch:active`. Inspect the Issue and session,
+resolve the cause, and let the orchestrator explicitly call `start <N>` when appropriate.
 
 No merge, cleanup, timer installation, or operator-checkout adoption happens
 merely by installing these files. The merge agent owns adoption and cleanup.

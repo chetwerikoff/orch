@@ -20,6 +20,9 @@ rules do not settle go to the architect (duty 4).
    narrower one first. Start each
    with `node scripts/runner/cli.ts start <N>` once the runner exists.
 2. **Runner notices** (`orch-notify #<N> <kind> <key>`, queued into this session):
+   - `escalated`: handle as an escalation (duty 4).
+   - `queue`: admit ready Issues up to the slot limit (duty 1).
+   - `review-outage`: inspect the cause and escalate when it will not clear by itself; one notice per key means no second reminder, while the runner keeps retrying reviews.
    - `stopped`: read the worker's last messages. Unfinished work: tell it what to
      do next. Done but no PR out of draft: tell it to finish the handoff. A
      question in its last message is an `asks`, even without a form.
