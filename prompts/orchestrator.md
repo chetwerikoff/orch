@@ -53,10 +53,8 @@ rules do not settle go to the architect (duty 4).
 
 ## Wake
 
-The runner queues notices into this session. Until the `queue` notice ships
-(#7), a local `orch-wake` timer also queues a wake prompt every 10 minutes: check
-ready Issues and every worker and merge session once, act, and end with `PARKED`.
-Send work with `opencode2 api POST /api/session/<id>/prompt --data
+The runner queues notices into this session; nothing else wakes you. Send work
+with `opencode2 api POST /api/session/<id>/prompt --data
 '{"text":"...","delivery":"queue"}'`.
 
 ## Never
