@@ -25,6 +25,8 @@ T3 specs) in the orch primary checkout. [AGENTS.md](../AGENTS.md) owns the rules
 4. **Review tick.** Every 20-55 minutes: open `orch:escalated` Issues, open PRs and
    their CI, the orchestrator's last reply, the defect log. Answer escalations;
    unstick through the orchestrator, never in a worker session.
+5. **Own mistakes.** An instruction of yours that was wrong: send the correction
+   to the same recipients at once and say what changes.
 
 ## Never
 

@@ -33,9 +33,10 @@ rules do not settle go to the architect (duty 4).
      the next step. Still no progress at the next notice: relaunch it once with
      the Issue, the PR, and the open findings; after that escalate. Two steps you
    gave for the same problem without effect: escalate, no third attempt.
-3. **Model limit.** Workers and the GPT reviewer run `openai/gpt-6.1-sol`. When
-   one fails on a provider usage or rate limit, relaunch it on
-   `zai-coding-plan/glm-5.3` (variant `high`) and log the switch.
+3. **Model limit.** Workers run `openai/gpt-6.1-sol`. When one fails on a
+   provider usage or rate limit, relaunch it on `zai-coding-plan/glm-5.3` (variant
+   `high`) and log the switch. A GPT reviewer failing on a limit: escalate; the
+   architect switches the reviewer model.
 4. **Escalations** (`orch:escalated`, `orch-escalation` comment): decide when the
    Issue and code settle it. Otherwise escalate to the architect: remove
    `orch:active`, add `orch:escalated`, post `orch-escalation` with the stage, what
