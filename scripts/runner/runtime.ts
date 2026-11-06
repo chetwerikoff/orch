@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { decide, noticeCandidates, shouldReadGitHub, messageID } from './decide.ts';
 import type { Facts, Session, Action, Decision } from './decide.ts';
-import { parseComments, ciState, tierOf, reviewerResult } from './github.ts';
+import { parseComments, ciFacts, tierOf, reviewerResult } from './github.ts';
 
 export type Run = (file: string, args: string[], cwd?: string, input?: string) => Promise<string>;
 export const runCommand: Run = (file, args, cwd, input) => new Promise((resolve, reject) => {
@@ -136,11 +136,11 @@ export class Runner {
     Object.assign(f, parseComments(comments));
     const checks = await this.pages(`repos/chetwerikoff/orch/commits/${p.head.sha}/check-runs`, 'check_runs');
     const statuses = await this.pages(`repos/chetwerikoff/orch/commits/${p.head.sha}/statuses`);
-    f.ci = ciState(checks, statuses);
+    Object.assign(f, ciFacts(checks, statuses));
     // GitHub has not finished calculating mergeability/required checks yet.
     if (f.ci === 'success' && p.mergeable === null) f.ci = 'pending';
     for (const s of statuses) if (!(s.context in f.statuses)) f.statuses[s.context] = s.state;
-    const ids = ['ci', 'smoke_fix', 'smoke', 'base', ...f.reviews.map(r => `review_${r.round}`)].map(k => messageID(f.number, k, p.head.sha));
+    const ids = ['ci', 'cidone', 'smoke_fix', 'smoke', 'base', ...f.reviews.map(r => `review_${r.round}`)].map(k => messageID(f.number, k, p.head.sha));
     await this.remember(f, f.worker?.id, ids);
     for (const id of f.workerIDs ?? []) if (await this.smokeStarted(id, f.number)) { f.smokeStarted = true; break; }
     return { pr: p, comments, checks, statuses };

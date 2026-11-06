@@ -136,6 +136,16 @@ An unsent findings/CI/smoke prompt takes precedence over a `stopped` notice;
 pending questions still take priority. A valid same-PR PASS supersedes historical
 BLOCKED smoke reports, while CI remains bound to the current head.
 
+For a draft PR whose head CI has concluded (`success` or `failure`), an inactive
+worker receives a CI-done prompt: the head and result, followed by "fix it, or mark
+the PR ready when the Issue is done". Its ID is
+`msg_orch_<N>_cidone_<head sha>`, sent once per head (checked in messages and inbox).
+It is not sent while CI is pending or the worker is active, and takes precedence
+over a `stopped` notice on that tick. Pending questions still take priority.
+Both this prompt and the non-draft CI-red prompt include up to 10 failure lines:
+check run `name | conclusion | details_url` and commit status
+`context | state | target_url`, using the existing CI reads.
+
 The runner queues work with head-keyed message IDs and checks both messages and
 inbox before sending. Pending questions take priority over work. Merge sessions
 are `ses_orch_<N>_merge_<sha7>` in the operator checkout. Existing active merge
