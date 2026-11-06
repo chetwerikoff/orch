@@ -8,7 +8,7 @@ export type Facts = {
   worker?: Session; workerIDs?: string[]; merge?: Session; requests: Request[];
   localHead?: string; commitTime?: number; seen: string[];
   pr?: { number: number; head: string; draft: boolean; merged: boolean; behind: boolean; conflict: boolean };
-  ci: 'pending' | 'success' | 'failure'; reviews: Review[]; smokes: Smoke[];
+  ci: 'pending' | 'success' | 'failure'; ciFailures?: string[]; reviews: Review[]; smokes: Smoke[];
   statuses: Record<string, string>; escalated?: boolean; smokeStarted?: boolean;
 };
 export type Action =
@@ -51,10 +51,15 @@ export function decide(f: Facts): Decision {
   };
   let d: Decision;
   const p = f.pr;
+  const failures = (f.ciFailures ?? []).slice(0, 10).join('\n');
   if (p?.merged) return out('MERGED', { kind: 'finish' });
   if (f.escalated) return out('ESCALATED', { kind: 'finish' });
-  if (!p || p.draft) d = out('WORKING');
-  else if (f.ci === 'failure') d = prompt('FIXING', 'ci', `Fix failing CI on PR #${p.number}, head ${p.head}; push the fix.`);
+  if (!p || p.draft) {
+    d = p && f.worker && !f.worker.active && f.ci !== 'pending'
+      ? prompt('WORKING', 'cidone', `CI ${f.ci} on draft PR #${p.number}, head ${p.head}; fix it, or mark the PR ready when the Issue is done.${failures ? `\n${failures}` : ''}`)
+      : out('WORKING');
+  }
+  else if (f.ci === 'failure') d = prompt('FIXING', 'ci', `Fix failing CI on PR #${p.number}, head ${p.head}; push the fix.${failures ? `\n${failures}` : ''}`);
   else if (f.ci !== 'success') d = out('CI');
   else {
     const reviewers = f.tier === 'T3' ? ['gpt', 'opus'] : ['gpt'];

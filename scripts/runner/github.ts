@@ -14,7 +14,7 @@ export function parseComments(comments: Comment[]) {
   return { reviews, smokes };
 }
 
-export function ciState(checks: any[], statuses: any[]): Facts['ci'] {
+export function ciFacts(checks: any[], statuses: any[]): Pick<Facts, 'ci' | 'ciFailures'> {
   // The runner's own review statuses must not deadlock CI after findings.
   const latest = new Map<string, any>();
   for (const s of statuses) if (!s.context.startsWith('orch-review/') && !latest.has(s.context)) latest.set(s.context, s);
@@ -25,8 +25,18 @@ export function ciState(checks: any[], statuses: any[]): Facts['ci'] {
   }
   const states = [...latest.values()].map(s => s.state);
   for (const c of runs.values()) states.push(c.status !== 'completed' ? 'pending' : ['success', 'neutral', 'skipped'].includes(c.conclusion) ? 'success' : 'failure');
-  if (states.some(s => ['failure', 'error'].includes(s))) return 'failure';
-  return states.length && states.every(s => s === 'success') ? 'success' : 'pending';
+  const line = (...fields: unknown[]) => fields.map(v => String(v ?? '').replace(/[\r\n]+/g, ' ')).join(' | ');
+  const ciFailures = [
+    ...[...runs.values()].filter(c => c.status === 'completed' && !['success', 'neutral', 'skipped'].includes(c.conclusion)).map(c => line(c.name, c.conclusion, c.details_url)),
+    ...[...latest.values()].filter(s => ['failure', 'error'].includes(s.state)).map(s => line(s.context, s.state, s.target_url)),
+  ].slice(0, 10);
+  const ci = states.some(s => ['failure', 'error'].includes(s)) ? 'failure'
+    : states.length && states.every(s => s === 'success') ? 'success' : 'pending';
+  return { ci, ciFailures };
+}
+
+export function ciState(checks: any[], statuses: any[]): Facts['ci'] {
+  return ciFacts(checks, statuses).ci;
 }
 
 export function tierOf(body: string): Facts['tier'] {
