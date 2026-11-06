@@ -23,7 +23,10 @@ full diff at the exact head SHA, and repository; report material findings only.
 5. Keep findings bound to the inspected SHA. If the live head changes, report
    the drift rather than claiming the new head is reviewed. If the Issue, complete
    diff, or required context cannot be read, name the missing coverage and next
-   supported read; do not report a clean review from incomplete evidence.
+   supported read; do not report a clean review from incomplete evidence. When
+   the caller supplies the Issue, PR context, CI, and diff for the named head,
+   that is the live read: do not refresh it, and missing `git`/`gh` access is not
+   a coverage gap.
 6. In round 2 or later, read the earlier `orch-review` comments and the worker's
    decline reasons. For each earlier finding, judge whether it still holds at
    the current head. Re-raise a declined finding with its original evidence when
@@ -78,4 +81,5 @@ For each material finding give the same fields as
 Evidence includes exact-head file:line references and the concrete trigger and
 harm. Keep recommendations proportional and outcome-focused. State the reviewed
 PR/head and any actual coverage limitation. If coverage is complete and there are
-no material findings, say `NO_FINDINGS`.
+no material findings, make `NO_FINDINGS` the last line of the review, after any
+summary.

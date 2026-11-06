@@ -24,6 +24,32 @@ test('queue notice is pure, sorted, filtered, slot-limited and deduped by ready 
   assert.deepEqual(queueNotice(ready, 0, [n.id]), { ...n, id: 'msg_orch_0_queue_3-5_a0', text: n.text.replace('a1', 'a0') });
   assert.deepEqual(queueNotice([issue(3)], 1, [n.id]), { ...n, id: 'msg_orch_0_queue_3_a1', text: 'orch-notify #0 queue 3_a1\n#3 Task 3' });
 });
+test('draft CI-done is idle-only, once per head, and precedes stopped notices', () => {
+  for (const ci of ['success', 'failure'] as const) {
+    const f = facts({ ci, worker: { id: 'ses_orch_4', active: false, created: 0, idle: 100 } });
+    f.pr!.draft = true;
+    const d = decide(f);
+    assert.equal(d.stage, 'WORKING'); assert.equal(d.action.kind, 'prompt');
+    if (d.action.kind !== 'prompt') continue;
+    assert.equal(d.action.id, 'msg_orch_4_cidone_abc');
+    assert.match(d.action.text, new RegExp(`CI ${ci}.*head abc`));
+    assert.match(d.action.text, /fix it, or mark the PR ready when the Issue is done/);
+    f.seen.push(d.action.id);
+    assert.notEqual(decide(f).action.kind, 'prompt');
+    f.pr!.head = 'new'; assert.equal(decide(f).action.kind, 'prompt');
+    f.ci = 'pending'; assert.notEqual(decide(f).action.kind, 'prompt');
+    f.ci = ci; f.worker!.active = true; assert.equal(decide(f).action.kind, 'none');
+    f.worker = undefined; assert.equal(decide(f).action.kind, 'none');
+  }
+});
+test('draft CI-done still respects pending questions', () => {
+  const f = facts({ worker: { id: 'ses_orch_4', active: false, created: 0, idle: 100 },
+    requests: [{ id: 'form_1', session: 'ses_orch_4', text: 'question' }] });
+  f.pr!.draft = true;
+  assert.equal(decide(f).action.kind, 'notify');
+  f.seen.push(messageID(4, 'asks', 'form_1'));
+  assert.equal(decide(f).action.kind, 'none');
+});
 test('admitted worker, draft, pending and failing CI', () => {
   assert.equal(decide(facts({ pr: undefined })).stage, 'WORKING');
   const f = facts(); f.pr!.draft = true;

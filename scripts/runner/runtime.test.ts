@@ -2,9 +2,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Runner, parseWorktrees, runCommand } from './runtime.ts';
 import type { Run } from './runtime.ts';
-import { parseComments, ciState, reviewerResult, tierOf } from './github.ts';
+import { parseComments, ciState, ciFacts, reviewerResult, tierOf } from './github.ts';
 import { decide } from './decide.ts';
 import { facts } from './decide.test.ts';
+import { parseStartArgs } from './start.ts';
 
 const issueBody = '## Goal\nTest\n```complexity-tier\ntier: T2\nbecause: test\n```';
 const sha = 'a'.repeat(40);
@@ -138,6 +139,40 @@ test('dry-run tick makes reads only and reports one stage per active Issue', asy
   f.calls.length = 0; await f.runner.tick(true, epoch + 60_000);
   assert.equal(f.calls.filter(c => c.file === 'gh').length, 0);
 });
+test('both CI prompts list current failing checks and statuses, capped at ten lines', () => {
+  const checks = [{ id: 1, name: 'test', status: 'completed', conclusion: 'failure', details_url: 'https://checks/test' },
+    { id: 2, name: 'fixed', status: 'completed', conclusion: 'failure' },
+    { id: 3, name: 'fixed', status: 'completed', conclusion: 'success' }];
+  const statuses = [{ context: 'external', state: 'error', target_url: 'https://statuses/external' },
+    { context: 'orch-review/gpt', state: 'failure' },
+    { context: 'fixed', state: 'success' }, { context: 'fixed', state: 'failure' }];
+  for (const draft of [true, false]) {
+    const f = facts({ ...ciFacts(checks, statuses), worker: { id: 'ses_orch_4', active: false, created: 0 } });
+    f.pr!.draft = draft;
+    const action = decide(f).action;
+    assert.equal(action.kind, 'prompt');
+    if (action.kind !== 'prompt') continue;
+    assert.deepEqual(action.text.split('\n').slice(1), ['test | failure | https://checks/test', 'external | error | https://statuses/external']);
+    Object.assign(f, ciFacts(checks, Array.from({ length: 15 }, (_, i) => ({ context: `external${i}`, state: 'failure', target_url: `https://statuses/${i}` }))));
+    const capped = decide(f).action;
+    assert.equal(capped.kind, 'prompt');
+    if (capped.kind === 'prompt') assert.equal(capped.text.split('\n').slice(1).length, 10);
+  }
+});
+test('draft CI-done dedupes both inbox and consumed messages, then sends on a new head', async () => {
+  const f = fixture(); f.prs.get(1).draft = true; delete f.live.ses_orch_1;
+  f.sessions[1].time.idle = epoch;
+  await f.runner.tick(false, epoch);
+  const inbox = f.inboxes.get('ses_orch_1')!;
+  assert.equal(inbox.length, 1); assert.equal(inbox[0].id, `msg_orch_1_cidone_${sha}`);
+  assert.equal(f.inboxes.get('ses_orchestrator'), undefined);
+  assert.equal(f.calls.filter(c => c.file === 'gh' && c.args.includes('GET')).length, 7); // Includes the scheduled free-slot ready list.
+  await f.runner.tick(false, epoch); assert.equal(inbox.length, 1);
+  f.messages.set('ses_orch_1', new Set([inbox[0].id])); f.inboxes.set('ses_orch_1', []);
+  await f.runner.tick(false, epoch); assert.equal(f.inboxes.get('ses_orch_1')!.length, 0);
+  f.prs.get(1).head.sha = 'b'.repeat(40);
+  await f.runner.tick(false, epoch); assert.equal(f.inboxes.get('ses_orch_1')!.length, 1);
+});
 test('no PR gives WORKING and stopped notice is sent once in inbox and after consumption', async () => {
   const f = fixture(); f.prs.clear(); delete f.live.ses_orch_1; f.sessions[1].time.idle = epoch - 5_000;
   await f.runner.tick(false, epoch);
@@ -189,6 +224,26 @@ test('start new branch and start after worktree-only crash both use base worker 
     await f.runner.start(1);
     assert.ok(f.sessions.some(s => s.id === 'ses_orch_1'));
     assert.equal(f.calls.filter(c => c.file === '/orca-cli' && c.args[0] === 'worktree' && c.args[1] === 'create').length, exists ? 0 : 1);
+    if (!exists) assert.ok(f.calls.find(c => c.file === '/orca-cli' && c.args[0] === 'worktree' && c.args[1] === 'create')!.args.includes('--no-parent'));
+  }
+});
+test('start parses default and explicit models, including optional variants', async () => {
+  const cases = [
+    { args: ['1'], model: { providerID: 'openai', id: 'gpt-6.1-sol', variant: 'medium' } },
+    { args: ['1', '--model', 'zai-coding-plan/glm-5.3#high'], model: { providerID: 'zai-coding-plan', id: 'glm-5.3', variant: 'high' } },
+    { args: ['1', '--model', 'zai-coding-plan/glm-5.3'], model: { providerID: 'zai-coding-plan', id: 'glm-5.3' } },
+  ];
+  for (const { args, model } of cases) {
+    const parsed = parseStartArgs(args); assert.deepEqual(parsed, { number: 1, model });
+    const f = fixture(); f.sessions.splice(1); f.trees.splice(1);
+    await f.runner.start(parsed.number, parsed.model);
+    await f.runner.start(parsed.number, parsed.model);
+    for (const id of ['ses_orch_1', 'ses_orch_1_2']) assert.deepEqual(f.sessions.find(s => s.id === id).model, model);
+  }
+  for (const args of [[], ['0'], ['-1'], ['1.5'], ['9007199254740992'], ['1', '--model'],
+    ['1', '--unknown', 'p/m'], ['1', '--model', 'p/m', 'extra'],
+    ...['model', '/model', 'provider/', 'p/m#', 'p/m#v#x', 'p /m', 'p/m#v x'].map(model => ['1', '--model', model])]) {
+    assert.throws(() => parseStartArgs(args), /Usage:/);
   }
 });
 test('three-Issue 30-minute dry-run schedule stays within 100 GitHub calls', async () => {
