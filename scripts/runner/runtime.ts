@@ -147,6 +147,11 @@ export class Runner {
   }
   async tick(dryRun: boolean, now = Date.now()) {
     this.calls = 0;
+    const failedIssues = new Set<number>();
+    const failIssue = (number: number, error: unknown) => {
+      failedIssues.add(number);
+      this.print(`#${number} error: ${error instanceof Error ? error.message : String(error)}`);
+    };
     const trees = parseWorktrees(await this.git(['worktree', 'list', '--porcelain']));
     const operator = trees.find(t => t.branch === 'main');
     if (!operator) throw new Error('No operator checkout on main; restore it before ticking.');
@@ -156,24 +161,31 @@ export class Runner {
     const locals = new Map<number, Facts>();
     for (const tree of localTrees) {
       const number = Number(tree.branch!.split('/')[1]);
-      locals.set(number, await this.localFacts(number, tree, now, active, operatorSessions));
+      try { locals.set(number, await this.localFacts(number, tree, now, active, operatorSessions)); }
+      catch (error) { failIssue(number, error); }
     }
     const scheduled = Math.floor(now / 60_000) % 5 === 0;
     const issues = scheduled ? (await this.pages('repos/chetwerikoff/orch/issues?state=all&labels=orch%3Aactive')).filter(i => !i.pull_request) : [];
     if (!scheduled) for (const f of locals.values()) if (shouldReadGitHub(f)) {
-      const issue = await this.gh(`repos/chetwerikoff/orch/issues/${f.number}`);
-      if (issue.labels.some((l: any) => l.name === 'orch:active')) issues.push(issue);
+      try {
+        const issue = await this.gh(`repos/chetwerikoff/orch/issues/${f.number}`);
+        if (issue.labels.some((l: any) => l.name === 'orch:active')) issues.push(issue);
+      } catch (error) { failIssue(f.number, error); }
     }
     for (const issue of issues) {
-      const tree = localTrees.find(t => t.branch === `orch/${issue.number}`);
-      const f = locals.get(issue.number) ?? await this.localFacts(issue.number, tree, now, active, operatorSessions);
-      const context = await this.githubFacts(f, issue, operatorSessions);
-      const decision = decide(f);
-      this.print(`#${f.number} ${decision.stage} ${JSON.stringify(decision.action)}${dryRun ? ' (dry-run)' : ''}`);
-      if (!dryRun) await this.execute(f, decision, issue, tree, operator.path, context);
+      if (failedIssues.has(issue.number)) continue;
+      try {
+        const tree = localTrees.find(t => t.branch === `orch/${issue.number}`);
+        const f = locals.get(issue.number) ?? await this.localFacts(issue.number, tree, now, active, operatorSessions);
+        const context = await this.githubFacts(f, issue, operatorSessions);
+        const decision = decide(f);
+        this.print(`#${f.number} ${decision.stage} ${JSON.stringify(decision.action)}${dryRun ? ' (dry-run)' : ''}`);
+        if (!dryRun) await this.execute(f, decision, issue, tree, operator.path, context);
+      } catch (error) { failIssue(issue.number, error); }
     }
-    if (!issues.length) this.print('No GitHub refresh due or no active Issues.');
+    if (!issues.length && !failedIssues.size) this.print('No GitHub refresh due or no active Issues.');
     this.print(`GitHub REST calls: ${this.calls}`);
+    return failedIssues.size === 0;
   }
   async prompt(sessionID: string | undefined, id: string, text: string, skills?: { id: string }[]) {
     if (!sessionID) throw new Error('Missing destination session; set ORCH_ORCHESTRATOR_SESSION or relaunch the worker with start.');

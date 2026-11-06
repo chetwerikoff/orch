@@ -62,7 +62,7 @@ test('READY merge identity, drift and merged cleanup', () => {
 });
 test('worker inability is an asks/stopped notice, never a runner escalation', () => {
   const f = facts({ reviews: [{ ...clean, result: 'FINDINGS' }], statuses: { 'orch-review/gpt': 'failure' },
-    worker: { id: 'ses_orch_4', active: false, created: 0, idle: 100 } });
+    worker: { id: 'ses_orch_4', active: false, created: 0, idle: 100 }, seen: [messageID(4, 'review_1', 'abc')] });
   let d = decide(f);
   assert.equal(d.stage, 'FIXING'); assert.equal(d.action.kind, 'notify');
   if (d.action.kind === 'notify') assert.match(d.action.text, /stopped 100/);
@@ -110,4 +110,33 @@ test('mixed-head partial round retries missing current-head reviewer without con
   assert.deepEqual(decide(f).action, { kind: 'review', round: 1, reviewers: ['gpt'] });
   f.reviews[0].result = 'FINDINGS';
   assert.deepEqual(decide(f).action, { kind: 'review', round: 1, reviewers: ['gpt'] });
+});
+test('a later same-PR PASS clears a historical smoke blocker, including after a new head', () => {
+  const f = facts({ ...reviewed, smokes: [
+    { head: 'old', result: 'BLOCKED', text: 'environment unavailable' },
+    { head: 'abc', result: 'PASS', text: 'environment restored; passed' },
+  ] });
+  assert.deepEqual(decide(f), { stage: 'READY', action: { kind: 'merge' } });
+  f.pr!.head = 'new';
+  assert.deepEqual(decide(f), { stage: 'READY', action: { kind: 'merge' } });
+  f.ci = 'pending'; assert.equal(decide(f).stage, 'CI');
+  f.ci = 'failure'; assert.equal(decide(f).stage, 'FIXING');
+});
+test('idle workers receive unsent CI, findings and smoke work before stopped supervision', () => {
+  const cases = [facts({ ci: 'failure' }),
+    facts({ reviews: [{ ...clean, result: 'FINDINGS' }], statuses: { 'orch-review/gpt': 'failure' } }),
+    facts({ ...reviewed, smokes: [{ head: 'abc', result: 'FAIL', text: 'failed' }] }), facts(reviewed)];
+  for (const f of cases) {
+    f.worker = { id: 'ses_orch_4', active: false, created: 0, idle: 100 };
+    const work = decide(f).action;
+    assert.equal(work.kind, 'prompt');
+    if (work.kind !== 'prompt') continue;
+    f.requests = [{ id: 'form_waiting', session: 'ses_orch_4', text: 'question' }];
+    assert.equal(decide(f).action.kind, 'notify');
+    f.requests = []; f.seen.push(work.id);
+    const stopped = decide(f).action;
+    assert.equal(stopped.kind, 'notify');
+    if (stopped.kind === 'notify') { assert.match(stopped.text, /stopped 100/); f.seen.push(stopped.id); }
+    assert.equal(decide(f).action.kind, 'none');
+  }
 });

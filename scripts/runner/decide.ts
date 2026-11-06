@@ -77,7 +77,7 @@ export function decide(f: Facts): Decision {
       d = out('REVIEW', { kind: 'review', round: next, reviewers: missing });
     } else if (!smokeStarted && current && findings) {
       d = prompt('FIXING', `review_${round}`, `Apply round ${round} orch-review findings on PR #${p.number} (head ${p.head}); push fixes, or decline findings with a one-line PR comment.`);
-    } else if (latestFailure?.result === 'BLOCKED') {
+    } else if (!pass && latestFailure?.result === 'BLOCKED') {
       d = out('ESCALATED', { kind: 'escalate', reason: `Smoke blocked: ${latestFailure.text}` });
     } else if (!pass && latestFailure?.head === p.head) {
       d = failure.length >= 2
@@ -98,7 +98,7 @@ export function decide(f: Facts): Decision {
   const notices = noticeCandidates(f);
   // A pending question blocks the ordinary action even after it was noticed.
   const asks = notices.filter(n => n.kind === 'asks');
-  const eligible = asks.length ? asks : notices.filter(n => n.kind === 'no-progress' || (n.kind === 'stopped' && ['WORKING', 'FIXING', 'SMOKE'].includes(d.stage)));
+  const eligible = asks.length ? asks : notices.filter(n => n.kind === 'no-progress' || (n.kind === 'stopped' && d.action.kind === 'none' && ['WORKING', 'FIXING', 'SMOKE'].includes(d.stage)));
   const n = eligible.find(n => !f.seen.includes(n.id));
   if (n) return out(d.stage, { kind: 'notify', id: n.id, text: `orch-notify #${f.number} ${n.kind} ${n.key}\n${n.text}` });
   if (asks.length) return out(d.stage);

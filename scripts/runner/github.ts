@@ -1,9 +1,11 @@
 import type { Review, Smoke, Facts } from './decide.ts';
 
-export type Comment = { body: string; user?: { login: string }; id?: number };
+export type Comment = { body: string; user?: { login: string }; author_association?: string; id?: number };
 export function parseComments(comments: Comment[]) {
   const reviews: Review[] = [], smokes: Smoke[] = [];
-  for (const { body } of comments) {
+  for (const { body, author_association } of comments) {
+    // Only GitHub's repository-authorized roles may publish workflow records.
+    if (!['OWNER', 'MEMBER', 'COLLABORATOR'].includes(author_association ?? '')) continue;
     const review = /^orch-review\r?\nhead-sha: ([a-f0-9]+)\r?\nreviewer: (gpt|opus)\r?\nround: ([1-9]\d*)\r?\nresult: (FINDINGS|NO_FINDINGS)\r?\n([\s\S]+)$/.exec(body);
     if (review) reviews.push({ head: review[1], reviewer: review[2], round: Number(review[3]), result: review[4] as Review['result'], text: review[5] });
     const smoke = /^orch-smoke-report\r?\nhead-sha: ([a-f0-9]+)\r?\nresult: (PASS|FAIL|BLOCKED)\r?\nscenarios:\r?\n([\s\S]+)$/.exec(body);

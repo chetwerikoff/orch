@@ -49,6 +49,9 @@ prompts, post comments/statuses, edit labels, fetch refs, or change a checkout.
 Errors remain failures. A non-refresh minute prints that no refresh is due; it
 does not invent a cached stage.
 
+An Issue-specific failure prints `#N error: ...`, leaves other Issues unblocked,
+and makes the command exit nonzero after printing its total REST call count.
+
 For effectful ticks use the same systemd unit as the timer, including on demand:
 
 ```sh
@@ -125,6 +128,13 @@ comment is posted, and a later tick retries. Review comments bind the runner's
 SHA, not anything the reviewer printed. A lost status write is repaired from the
 posted comment without rerunning the reviewer. A dirty or wrong-head checkout
 fails rather than resetting the worker's work.
+
+Protocol comments are accepted only when GitHub reports the author association
+as `OWNER`, `MEMBER`, or `COLLABORATOR`; missing or other associations are ignored.
+This uses metadata already returned with comments, without extra REST calls.
+An unsent findings/CI/smoke prompt takes precedence over a `stopped` notice;
+pending questions still take priority. A valid same-PR PASS supersedes historical
+BLOCKED smoke reports, while CI remains bound to the current head.
 
 The runner queues work with head-keyed message IDs and checks both messages and
 inbox before sending. Pending questions take priority over work. Merge sessions
