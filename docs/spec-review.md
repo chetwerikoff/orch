@@ -42,6 +42,11 @@ A fresh Opus session. Input: the spec, all reviewer outputs, targeted repo reads
   - **partial** — the defect is real but the remedy is over-prescribed; fix only
     the required outcome, in the cheapest sufficient way;
   - **reject** — speculative, stylistic, disproportionate, or out of scope.
+- A reject reason cites evidence the reviewer could read: a file:line, the Issue
+  text, or a recorded decision. "Intentional" or "out of scope" without such
+  evidence is not a reason. When the evidence exists only outside the material
+  the reviewer could read, the finding goes to the operator questions instead.
+  Do not add context to the spec only to satisfy a zero-context reviewer.
 - Accepted and partial findings are applied to the Issue body by the editor
   directly.
 - Each reviewer runs once per spec. There is no second review pass after the
