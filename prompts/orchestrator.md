@@ -48,21 +48,13 @@ rules do not settle go to the architect (duty 4).
    `YYYY-MM-DD HH:MM | <where> | <what happened> | <suggested fix>`. Fix nothing
    in tracked policy yourself; the architect batches the log.
 
-## Before the runner exists
+## Wake
 
-Until the runner Issue merges, do the runner's job by hand for each worker, in
-the flow order. A local `orch-wake` timer queues a wake prompt into this session
-every 10 minutes; each wake, check every worker and merge session once
-(`opencode2 api GET /api/session/active`, `.../<id>/message`, `.../form`,
-`.../permission`, the worktree `git log`), act, and end with `PARKED`. Send work
-with `opencode2 api POST /api/session/<id>/prompt --data
-'{"text":"...","delivery":"queue"}'`. On a non-draft PR with green CI run the
-tier's reviewers once (T1/T2: GPT; T3: GPT and Opus, see
-[flow](../docs/flow.md)), for GPT
-(`opencode2 run -m 'openai/gpt-6.1-sol#medium' -f prompts/pr-review.md ...`),
-post its text as the `orch-review` comment ([flow](../docs/flow.md#review)),
-queue the findings to the worker; then have the worker run smoke; on READY start
-a fresh merge agent with the `merge-with-local-adoption` skill.
+The runner queues notices into this session. Until the `queue` notice ships
+(#7), a local `orch-wake` timer also queues a wake prompt every 10 minutes: check
+ready Issues and every worker and merge session once, act, and end with `PARKED`.
+Send work with `opencode2 api POST /api/session/<id>/prompt --data
+'{"text":"...","delivery":"queue"}'`.
 
 ## Never
 
