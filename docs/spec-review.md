@@ -25,7 +25,8 @@ section, one line per decision. The editor and the worker both need it.
 
 ## Reviewers
 
-Each reviewer looks for contradictions, infeasibility, unnecessary machinery, and
+Each reviewer uses [`prompts/draft-review.md`](../prompts/draft-review.md): it looks
+for contradictions, infeasibility, unnecessary machinery, and
 material gaps against the live spec and repository. One output per reviewer,
 findings with id, severity, evidence, and recommendation.
 
@@ -33,9 +34,18 @@ findings with id, severity, evidence, and recommendation.
 
 A fresh Opus session. Input: the spec, all reviewer outputs, targeted repo reads.
 
-- For every finding: accept or reject, one line of reason, and the source tag
-  (`opus`, `gpt`, `third`, `lens`).
-- Accepted findings are applied to the Issue body by the editor directly.
+- Every finding is a proposal, not an instruction. For each one record a
+  disposition, one line of reason, and the source tag (`opus`, `gpt`, `third`,
+  `lens`):
+  - **accept** — real contradiction, infeasibility, contract, security, scope, or
+    acceptance gap; fix it;
+  - **partial** — the defect is real but the remedy is over-prescribed; fix only
+    the required outcome, in the cheapest sufficient way;
+  - **reject** — speculative, stylistic, disproportionate, or out of scope.
+- Accepted and partial findings are applied to the Issue body by the editor
+  directly.
+- Each reviewer runs once per spec. There is no second review pass after the
+  editor; the lens is the last check.
 - Accepting a finding that adds machinery (gate, store, queue, watcher, lease,
   retry, persistent state) requires naming the invariant that breaks without it.
 - Questions about intent or scope are not decided: they are collected for the

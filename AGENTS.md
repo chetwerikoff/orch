@@ -32,8 +32,17 @@ the single policy canon; the docs below own their topics.
 OpenCode V2 reads the shared `~/.config/opencode/opencode.json`. Defaults above
 are operator configuration; changing a model is an edit to this table.
 
+## Ad-hoc challenge
+
+To challenge any draft outside the Issue flow (design notes, proposals), run the
+GPT reviewer once on the file with [`prompts/draft-review.md`](prompts/draft-review.md),
+for example `opencode run -m openai/gpt-6.1-sol -f prompts/draft-review.md -f <draft>`.
+Its findings go through the editor dispositions in
+[spec-review](docs/spec-review.md#editor). One pass is enough.
+
 ## Topic owners
 
+- Issue body: [`docs/issue-template.md`](docs/issue-template.md)
 - Task tiers: [`docs/tiering.md`](docs/tiering.md)
 - Spec review per tier: [`docs/spec-review.md`](docs/spec-review.md)
 - Execution flow after the worker: [`docs/flow.md`](docs/flow.md)
