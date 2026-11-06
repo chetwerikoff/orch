@@ -25,8 +25,9 @@ SMOKE     --fail (1st)-->                   FIXING
 SMOKE     --fail (2nd)-->                   ESCALATED
 SMOKE     --pass-->                         REVIEW   (PR review, status on head)
 REVIEW    --clean-->                        READY
-REVIEW    --findings, round <= 2-->         FIXING
-REVIEW    --findings, round > 2-->          ESCALATED
+REVIEW    --findings, round < cap-->        FIXING
+REVIEW    --findings, round = cap-->        FIXING, then READY after CI + smoke on new head
+REVIEW    --worker cannot fix-->            ESCALATED
 FIXING    --new head pushed-->              CI
 READY     --merge (see open question)-->    MERGED
 any       --no head change for T hours-->   relaunch worker once, then ESCALATED
@@ -42,6 +43,10 @@ READY     --behind / conflict-->            FIXING
   decline a finding with a one-line reason in the PR; the next review round
   judges that. If the session is dead or compacted, start a fresh worker in the
   same worktree from the Issue, the PR, and the findings.
+- **Review rounds per tier:** T1 and T2 get 1 round, T3 gets 2. After the last
+  round the worker applies the findings and the PR goes to READY once CI and smoke
+  pass on the new head; there is no extra review of the fix. T1/T2 work reverts
+  with `git revert` by definition, so an unreviewed fix is a bounded risk.
 - **Reviewer outage** is retried on the next run and does not consume a round.
 - **Escalation** goes to the orchestrator and, from there, to the operator. The
   runner never tries to resolve an unusual case itself.
@@ -67,4 +72,4 @@ separate merge agent. Operator decision pending.
 One real Issue completes through this flow, and these cases behave as stated:
 worker dies after push (runner finds the PR, no duplicate work); runner fires
 twice (nothing repeats); new head after review (old statuses ignored); round cap
-reached (escalation, no merge).
+reached (fix applied, CI + smoke rerun, no extra review).
