@@ -56,7 +56,8 @@ any       --session running, no new head 20m-->  notify orchestrator (again ever
   adopts the merged `main` in the operator checkout, applies any local adoption
   steps, and removes the worker's worktree.
 - **Reviewer outage** is retried on the next run and does not consume a round.
-- **Escalation** goes to the orchestrator and, from there, to the operator. The
+- **Escalation** goes to the orchestrator and, from there, to the architect, who
+  asks the operator only for what the system lacks. The
   runner never tries to resolve an unusual case itself.
 - **Worker supervision** is the orchestrator's judgment, not the runner's. The
   runner only notices facts and notifies the orchestrator: the worker owes work

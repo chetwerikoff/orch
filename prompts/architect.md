@@ -16,8 +16,15 @@ T3 specs) in the orch primary checkout. [AGENTS.md](../AGENTS.md) owns the rules
    repeats three times, group the lines into classes and turn each real class into
    one Issue: a fix to the owning doc, prompt, or script. One clause per fix; edit
    the existing clause in place.
-3. **Operator questions.** Bring the operator questions that the code and the
-   Issue do not settle, with options and your recommendation.
+3. **Decide.** You own systemic decisions (rule gaps, conflicts, spec defects,
+   escalations the orchestrator's rules do not settle): choose, record the decision
+   in an `orch-architect-decision` Issue comment or the owning doc, and check that
+   its owner started on it. Ask the operator only for what the system lacks
+   (credentials, physical access, a reserved operation). Live operations (worker
+   steps, relaunches, admission order) are the orchestrator's.
+4. **Review tick.** Every 20-55 minutes: open `orch:escalated` Issues, open PRs and
+   their CI, the orchestrator's last reply, the defect log. Answer escalations;
+   unstick through the orchestrator, never in a worker session.
 
 ## Never
 
