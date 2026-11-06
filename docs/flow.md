@@ -9,9 +9,9 @@ needed. Agents keep no workflow memory between calls.
 - Runs every few minutes (and once on demand). Stateless: each run derives every
   active Issue's stage from GitHub facts and takes at most one next action per
   Issue.
-- Review results are posted as commit statuses keyed by the PR head SHA; results
-  for an older head are ignored. The smoke report is a PR comment (see
-  [Smoke](#smoke)).
+- The runner publishes review results (see [Review](#review)); reviewers never
+  write to GitHub. Results for an older head are ignored. The smoke report is a
+  PR comment from the worker (see [Smoke](#smoke)).
 - A second run, a crash, or a restart is harmless: the stage is recomputed and
   actions are keyed by head SHA.
 
@@ -58,6 +58,30 @@ any       --no head change for T hours-->       relaunch worker once, then ESCAL
 - **Reviewer outage** is retried on the next run and does not consume a round.
 - **Escalation** goes to the orchestrator and, from there, to the operator. The
   runner never tries to resolve an unusual case itself.
+
+## Review
+
+- The runner starts each reviewer with the PR, the Issue, and the exact head SHA,
+  and takes the reviewer's text output (`opencode2 run` for GPT, Claude Code
+  print mode for Opus). The reviewer has no GitHub write access and changes
+  nothing.
+- The runner posts one PR comment per reviewer and round, starting with the line
+  `orch-review`:
+
+  ```text
+  orch-review
+  head-sha: <SHA the runner gave the reviewer>
+  reviewer: gpt | opus
+  round: <N>
+  result: FINDINGS | NO_FINDINGS
+  <reviewer text>
+  ```
+
+  `result` is `NO_FINDINGS` only when the reviewer's output says `NO_FINDINGS`.
+  Then the runner sets a commit status on that SHA. Round counts come from these
+  comments.
+- Empty, truncated, or failed reviewer output is a reviewer outage: nothing is
+  posted, and the next run retries.
 
 ## Smoke
 
