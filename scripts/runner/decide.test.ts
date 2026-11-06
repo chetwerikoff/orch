@@ -24,7 +24,7 @@ test('review outage retries, clean advances, status repair and stale head', () =
   assert.deepEqual(decide(facts()).action, { kind: 'review', round: 1, reviewers: ['gpt'] });
   assert.equal(decide(facts(reviewed)).stage, 'SMOKE');
   assert.deepEqual(decide(facts({ reviews: [clean] })).action, { kind: 'review', round: 1, reviewers: [] });
-  assert.equal(decide(facts({ ...reviewed, tier: 'T3', reviews: [{ ...clean, head: 'old' }, { ...clean, reviewer: 'opus', head: 'old' }] })).stage, 'REVIEW');
+  assert.equal(decide(facts({ ...reviewed, tier: 'T3', reviews: [{ ...clean, head: 'old' }, { ...clean, reviewer: 'opus', head: 'old' }] })).stage, 'SMOKE');
 });
 test('findings, tier caps, partial T3 round', () => {
   for (const tier of ['T1', 'T2', 'T3'] as const) {
@@ -86,4 +86,16 @@ test('GitHub read schedule: fifth minute, recent idle, unseen request only', () 
   f.worker!.idle = f.now - 120_000; assert.equal(shouldReadGitHub(f), false);
   f.requests = [{ id: 'perm', session: 's', text: 'ask' }]; assert.equal(shouldReadGitHub(f), true);
   f.seen.push(messageID(4, 'asks', 'perm')); assert.equal(shouldReadGitHub(f), false);
+});
+test('a clean last round does not make another review due on a later head', () => {
+  const f = facts({ tier: 'T3', reviews: [{ ...clean, head: 'old' }, { ...clean, reviewer: 'opus', head: 'old' }] });
+  assert.equal(decide(f).stage, 'SMOKE');
+  f.reviews[0].result = 'FINDINGS';
+  assert.deepEqual(decide(f).action, { kind: 'review', round: 2, reviewers: ['gpt', 'opus'] });
+});
+test('mixed-head partial round retries missing current-head reviewer without consuming another round', () => {
+  const f = facts({ tier: 'T3', reviews: [{ ...clean, head: 'old' }, { ...clean, reviewer: 'opus' }], statuses: { 'orch-review/opus': 'success' } });
+  assert.deepEqual(decide(f).action, { kind: 'review', round: 1, reviewers: ['gpt'] });
+  f.reviews[0].result = 'FINDINGS';
+  assert.deepEqual(decide(f).action, { kind: 'review', round: 1, reviewers: ['gpt'] });
 });

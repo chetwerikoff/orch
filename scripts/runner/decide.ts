@@ -64,14 +64,15 @@ export function decide(f: Facts): Decision {
     const last = [...new Map(f.reviews.filter(r => r.round === round).map(r => [r.reviewer, r])).values()];
     const complete = reviewers.every(name => last.some(r => r.reviewer === name));
     const current = last.every(r => r.head === p.head);
+    const incomplete = !complete || (last.some(r => r.head === p.head) && !current);
     const findings = last.some(r => r.result === 'FINDINGS');
     const pass = f.smokes.some(s => s.result === 'PASS');
     const failure = f.smokes.filter(s => s.result !== 'PASS');
     const latestFailure = failure.at(-1);
     // Once smoke has started, its fixes never open another review round.
     const smokeStarted = f.smokeStarted || f.smokes.length > 0;
-    if (!smokeStarted && (!round || (!complete) || (!current && round < cap))) {
-      const next = !round ? 1 : !complete ? round : round + 1;
+    if (!smokeStarted && (!round || incomplete || (!current && findings && round < cap))) {
+      const next = !round ? 1 : incomplete ? round : round + 1;
       const done = f.reviews.filter(r => r.round === next && r.head === p.head);
       const missing = reviewers.filter(name => !done.some(r => r.reviewer === name));
       d = out('REVIEW', { kind: 'review', round: next, reviewers: missing });
