@@ -13,7 +13,13 @@ export const listChats: ListChats = async path => {
 };
 const text = (e: any): string => typeof e.message?.content === 'string' ? e.message.content
   : (e.message?.content ?? []).filter((b: any) => b.type === 'text').map((b: any) => b.text).join('\n');
-const messageID = (e: any) => e.role === 'user' ? /^orch-msg: ([^\n]+)(?:\n|$)/.exec(text(e))?.[1] : undefined;
+const messageID = (e: any) => {
+  if (e.role !== 'user') return undefined;
+  // Print-mode transcripts prepend Cursor metadata to the original prompt.
+  // Strip only that prefix, not arbitrary lines containing quoted message IDs.
+  const prompt = text(e).replace(/^(?:<timestamp>[^\n]*<\/timestamp>\n)?<user_query>\n/, '');
+  return /^orch-msg: ([^\n]+)(?:\n|$)/.exec(prompt)?.[1];
+};
 const firstUser = (t: Transcript) => t.entries.find(e => e.role === 'user');
 type Chat = { id: string; path: string; transcript: Transcript };
 

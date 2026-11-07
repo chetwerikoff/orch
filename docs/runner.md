@@ -151,7 +151,8 @@ The unit's working directory determines the transcript project. `--collect`
 permits another launch after failure; literal prompt text and PATH handling match
 Claude. The active unit is the only lock: ordinary prompts wait for another tick;
 `say <N> "<text>"` fails while active. Never run a concurrent interactive resume.
-Dedup checks the exact `orch-msg:` first line in user messages. Smoke history
+Dedup checks the exact `orch-msg:` first prompt line in user messages, after
+Cursor's timestamp/`<user_query>` prefix (when present). Smoke history
 counts `msg_orch_<N>_smoke_` IDs but not `msg_orch_<N>_smoke_fix_`, across suffixes.
 Idle time is transcript mtime; creation time is file birth time, not an entry
 timestamp. Pending requests are empty; the orchestrator reads a last-message

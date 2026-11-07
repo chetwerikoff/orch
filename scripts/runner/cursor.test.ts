@@ -108,6 +108,29 @@ test('Cursor dedup and smoke history read user first lines only', async () => {
   assert.equal(await b.smokeStarted(1), true);
 });
 
+test('Cursor timestamp/user_query transcript wrappers preserve dedup and smoke history', async () => {
+  // cursor-agent 2026.10.22 print-mode transcript shape observed in Issue #17 smoke.
+  const wrapped = (body: string) => user(`<timestamp>Saturday, Nov 7, 2026, 12:15 PM (UTC+7)</timestamp>\n<user_query>\n${body}\n</user_query>`);
+  const start = wrapped(`orch-msg: msg_orch_1_start_1\norch-worker: ${name}\norch-worker-model: cursor/${model.id}\nwork`);
+  const f = fixture();
+  f.save(uuid, [start, wrapped('orch-msg: msg_orch_1_smoke_fix_abc\nfix'),
+    wrapped('quoted marker\norch-msg: fake'),
+    { role: 'assistant', message: wrapped('orch-msg: assistant-only').message }]);
+  const b = f.backend();
+  assert.equal((await b.chat())?.id, uuid);
+  assert.equal(await b.hasMessage('msg_orch_1_start_1'), true);
+  assert.equal(await b.hasMessage('msg_orch_1_smoke_fix_abc'), true);
+  assert.equal(await b.hasMessage('fake'), false);
+  assert.equal(await b.hasMessage('assistant-only'), false);
+  assert.equal(await b.smokeStarted(1), false);
+  await b.prompt('msg_orch_1_start_1', 'do not redeliver');
+  assert.ok(!f.calls.some(c => c.file === 'systemd-run'));
+  f.save(uuid, [start, wrapped('orch-msg: msg_orch_1_smoke_abc\nsmoke')]);
+  assert.equal(await b.smokeStarted(1), true);
+  await b.prompt('msg_orch_1_smoke_abc', 'do not redeliver smoke');
+  assert.ok(!f.calls.some(c => c.file === 'systemd-run'));
+});
+
 test('duplicate Cursor identities fail every backend operation and discovery with chat IDs', async () => {
   const f = fixture();
   f.save(); f.save(other);
