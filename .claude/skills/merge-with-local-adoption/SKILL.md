@@ -22,7 +22,9 @@ Resolve from live task, GitHub, Git, and native worktree facts:
   branch/ref and full OID, and any native worktree/terminal identities needed.
 
 Read the current Issue, PR body, full changed paths/content, review threads, CI,
-and current-head statuses. Reread readiness immediately before merging. Unexpected
+and current-head statuses. Reread readiness immediately before merging. When
+the runner started you on READY, review and smoke are already settled: readiness
+here means the exact head, mergeability, and current-head CI. Unexpected
 head/base/readiness drift returns to the runner's flow; do not silently retarget.
 A short name, display label, path alone, or stale record does not authorize a
 runtime effect. Stop destructive work on ambiguous targets; continue unblocked work.
