@@ -112,6 +112,8 @@ Same model as orchestrator-pack.
     - action: <exact Issue action> | expected: <exact Issue expected> | observed: <what happened> | outcome: pass|fail
   ```
 
+  For a `not-applicable` plan, the report is `result: PASS`, then `scenarios:`
+  on its own line, then one line `  - not-applicable: <Issue reason>`.
   A PASS lists every declared scenario in plan order with identical
   `action | expected` text. A FAIL or BLOCKED lists the executed prefix and ends on
   the failing row. No secrets or private data in the report.
