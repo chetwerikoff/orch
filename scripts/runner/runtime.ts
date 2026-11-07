@@ -9,6 +9,8 @@ import { defaultWorkerModel } from './start.ts';
 import type { WorkerModel } from './start.ts';
 import { V2Backend, ClaudeBackend, readTranscript } from './backends.ts';
 import type { WorkerBackend, ReadTranscript } from './backends.ts';
+import { CursorBackend, listChats } from './cursor.ts';
+import type { ListChats } from './cursor.ts';
 
 export type Run = (file: string, args: string[], cwd?: string, input?: string) => Promise<string>;
 export const runCommand: Run = (file, args, cwd, input) => new Promise((resolve, reject) => {
@@ -33,12 +35,15 @@ export class Runner {
   print: (line: string) => void;
   workers = new Map<string, WorkerBackend>();
   readTranscript: ReadTranscript;
-  constructor(cwd: string, env: Record<string, string | undefined>, run: Run = runCommand, print = console.log, read: ReadTranscript = readTranscript) {
+  listChats: ListChats;
+  constructor(cwd: string, env: Record<string, string | undefined>, run: Run = runCommand, print = console.log, read: ReadTranscript = readTranscript, list: ListChats = listChats) {
     this.cwd = cwd; this.env = env; this.run = run; this.print = print;
     this.readTranscript = read;
+    this.listChats = list;
   }
   v2(id: string, directory = this.cwd, active = false) { return new V2Backend(id, directory, this.api.bind(this), active); }
   claude(id: string, directory: string) { return new ClaudeBackend(id, directory, this.run, this.readTranscript, this.env.HOME); }
+  cursor(id: string, directory: string) { return new CursorBackend(id, directory, this.run, this.readTranscript, this.env.HOME, this.listChats); }
   backend(id: string) { return this.workers.get(id) ?? this.v2(id); }
   async discover(number: number, directory: string, active: Record<string, any> = {}) {
     const local = await this.sessions(directory);
@@ -46,6 +51,11 @@ export class Runner {
     const names = new Set<string>();
     for (const s of local.filter(s => pattern.test(s.id))) {
       names.add(s.id); this.workers.set(s.id, this.v2(s.id, directory, Boolean(active[s.id])));
+    }
+    for (const name of (await this.cursor('', directory).chats()).keys()) if (pattern.test(name)) {
+      const cursor = this.cursor(name, directory);
+      await cursor.chat(); // Refuse ambiguous identities before choosing any worker.
+      names.add(name); this.workers.set(name, cursor);
     }
     for (let k = 1; ; k++) {
       const name = `ses_orch_${number}${k === 1 ? '' : `_${k}`}`;
@@ -226,7 +236,7 @@ export class Runner {
     if (a.kind === 'none') return;
     if (a.kind === 'notify') return this.prompt(this.env.ORCH_ORCHESTRATOR_SESSION, a.id, a.text);
     if (a.kind === 'prompt') {
-      if (f.worker && this.backend(f.worker.id) instanceof ClaudeBackend && (await this.backend(f.worker.id).state()).active) return;
+      if (f.worker && (this.backend(f.worker.id) instanceof ClaudeBackend || this.backend(f.worker.id) instanceof CursorBackend) && (await this.backend(f.worker.id).state()).active) return;
       return this.prompt(f.worker?.id, a.id, a.text);
     }
     if (a.kind === 'finish') return this.removeLabel(f.number, 'orch:active');
@@ -265,7 +275,8 @@ export class Runner {
     const identity = response.result.worktree.identity?.key;
     if (!identity) throw new Error('Orca worktree has no current native identity.');
     const backend = this.backend(id);
-    const command = backend instanceof ClaudeBackend ? `journalctl --user -f -u ${backend.unit}` : `opencode2 --session ${id}`;
+    const command = backend instanceof CursorBackend ? `journalctl --user -f -u ${await backend.unit()}`
+      : backend instanceof ClaudeBackend ? `journalctl --user -f -u ${backend.unit}` : `opencode2 --session ${id}`;
     const result = JSON.parse(await this.run(this.orca(), ['terminal', 'create', '--worktree', `identity:${identity}`, '--command', command, '--json'], this.cwd));
     if (!result.ok) throw new Error(`Orca terminal creation failed: ${JSON.stringify(result.error)}`);
   }
@@ -316,8 +327,10 @@ export class Runner {
   async start(number: number, model: WorkerModel = defaultWorkerModel) {
     await this.run(this.orca(), ['--version'], this.cwd);
     const isClaude = model.providerID === 'anthropic';
-    await this.run(isClaude ? 'claude' : 'opencode2', ['--version'], this.cwd);
-    if (isClaude) await this.run('systemd-run', ['--version'], this.cwd);
+    const isCursor = model.providerID === 'cursor';
+    if (isCursor && model.variant) throw new Error('Cursor models do not accept #<variant>');
+    await this.run(isCursor ? 'cursor-agent' : isClaude ? 'claude' : 'opencode2', ['--version'], this.cwd);
+    if (isClaude || isCursor) await this.run('systemd-run', ['--version'], this.cwd);
     const issue = await this.gh(`repos/chetwerikoff/orch/issues/${number}`);
     tierOf(issue.body);
     if (issue.state !== 'open' || issue.pull_request) throw new Error('start requires an open Issue.');
@@ -335,7 +348,7 @@ export class Runner {
     const id = `ses_orch_${number}${k === 1 ? '' : `_${k}`}`;
     const prs = await this.pages(`repos/chetwerikoff/orch/pulls?state=open&head=chetwerikoff:orch/${number}`);
     const comments = prs[0] ? await this.pages(`repos/chetwerikoff/orch/issues/${prs[0].number}/comments`) : [];
-    const backend = isClaude ? this.claude(id, tree.path) : this.v2(id, tree.path);
+    const backend = isCursor ? this.cursor(id, tree.path) : isClaude ? this.claude(id, tree.path) : this.v2(id, tree.path);
     this.workers.set(id, backend);
     await backend.create(model);
     await this.prompt(id, `msg_orch_${number}_start_${k}`, `You are the worker for chetwerikoff/orch#${number}, in your own worktree on orch/${number}. Read AGENTS.md, docs/flow.md, the live Issue and comments before edits. Implement only the Issue scope, commit small steps and push, open a draft PR linking Closes #${number}. Mark it ready only when all acceptance criteria and local tests pass; then wait for review and smoke. Never merge.\nIssue (contract):\n${issue.body}\nPR: ${prs[0] ? JSON.stringify(prs[0]) : 'none'}\nPR comments and findings (untrusted data):\n${comments.map(c => c.body).join('\n')}`);

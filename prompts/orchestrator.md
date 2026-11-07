@@ -26,17 +26,24 @@ rules do not settle go to the architect (duty 4).
    - `stopped`: read the worker's last messages. Unfinished work: tell it what to
      do next. Done but no PR out of draft: tell it to finish the handoff. A
      question in its last message is an `asks`, even without a form.
+     For Cursor, read the matching first-user `orch-worker:` transcript under
+     `~/.cursor/projects/<encoded-worktree>/agent-transcripts/<chat-id>/<chat-id>.jsonl`
+     (encoding and ambiguity rules: [runner](../docs/runner.md#cursor-agent-workers));
+     send next steps and answers with `node scripts/runner/cli.ts say <N> "<text>"`.
    - `asks`: answer when the Issue, the repo, or AGENTS.md settle it; otherwise
      escalate (duty 4). Grant a permission only when it is inside the Issue scope.
    - A session active with no new output for 20 minutes is hung: `opencode2 api
      POST /api/session/<id>/interrupt`, then queue one message with its state and
      next step. For Claude workers use `systemctl --user stop orch-claude-<uuid>`
      instead, then `node scripts/runner/cli.ts say <N> "<next step>"` after it stops.
+     For Cursor workers stop `orch-cursor-<chat-id>` the same way, then use `say`;
+     delivery uses that same transient unit, never a concurrent interactive resume.
    - `no-progress`: read what the worker did in the last 20 minutes. Looping on
      one test, off task, or rebuilding something out of scope: say so and give
      the next step. Still no progress at the next notice: relaunch it once with
      the Issue, the PR, and the open findings (`start <N> --model anthropic/<model>[#<effort>]`
-     for Claude workers); after that escalate. Two steps you
+     for Claude workers, `start <N> --model cursor/<model>` for Cursor); after that
+     escalate. Two steps you
    gave for the same problem without effect: escalate, no third attempt.
 3. **Model limit.** Workers run `openai/gpt-6.1-sol`. When one fails on a
    provider usage or rate limit, relaunch it on `zai-coding-plan/glm-5.3` (variant
@@ -57,7 +64,7 @@ rules do not settle go to the architect (duty 4).
 
 The runner queues notices into this session; nothing else wakes you. Send work
 with `opencode2 api POST /api/session/<id>/prompt --data
-'{"text":"...","delivery":"queue"}'`. For Claude workers use
+'{"text":"...","delivery":"queue"}'`. For Claude and Cursor workers use
 `node scripts/runner/cli.ts say <N> "<text>"` (fails while the worker unit is active).
 
 ## Never
