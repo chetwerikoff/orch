@@ -1,12 +1,15 @@
 # Runner
 
 The runner implements [the execution flow](flow.md). GitHub is workflow state;
-OpenCode V2 owns sessions and queued prompts. There is no runner state file.
+worker backends own sessions and delivery (OpenCode V2 by default, or Claude Code).
+There is no runner state file.
 
 ## Requirements
 
 - Node **24** (native TypeScript), `git`, authenticated `gh`, `opencode2`,
-  Claude Code (`claude`, for T3 reviews), and the running Orca desktop/CLI.
+  Claude Code (`claude`, for Claude workers and T3 reviews), and the running Orca
+  desktop/CLI.
+  Claude workers also require user systemd (`systemd-run`, `systemctl`, `journalctl`).
 - A local operator checkout on `main` in this repository's git worktree list.
   Run commands from a checkout of this repository. Worker branches are `orch/<N>`.
 - `ORCA_CLI_COMMAND`: the exact executable for the selected Orca installation.
@@ -32,6 +35,8 @@ and deletion in fake-backed tests until a live smoke run is explicitly authorize
 ```sh
 node scripts/runner/cli.ts start 12
 node scripts/runner/cli.ts start 12 --model zai-coding-plan/glm-5.3#high
+node scripts/runner/cli.ts start 12 --model anthropic/sonnet#high
+node scripts/runner/cli.ts say 12 "Continue with the Issue's specified option."
 node scripts/runner/cli.ts tick --dry-run
 node --test scripts/runner
 ```
@@ -40,8 +45,9 @@ node --test scripts/runner
 it creates the Orca worktree with `--no-parent` if absent (never inheriting the
 calling terminal's worktree lineage), verifies
 the exact `orch/<N>` branch, creates the worker session, queues the Issue prompt,
-opens a visible `opencode2 --session <id>` terminal, removes `orch:escalated`, and
-adds `orch:active`. An existing worktree is reused. Each explicit repeat creates
+opens a visible backend terminal (V2: `opencode2 --session <id>`), removes
+`orch:escalated`, and adds `orch:active`. An existing worktree is reused.
+Each explicit repeat creates
 the next worker session (`ses_orch_<N>`, then `ses_orch_<N>_2`, etc.), so it also
 recovers an interrupted start or resumes an escalated worker. It is not an
 automatic restart command: the orchestrator decides whether to call it.
@@ -50,6 +56,65 @@ both the first start and relaunch; without `#variant`, no variant is sent.
 After a provider usage limit, the orchestrator uses
 `--model zai-coding-plan/glm-5.3#high`. There is no model auto-detection or retry
 change.
+
+### Claude Code workers
+
+An `anthropic/<model>[#<effort>]` model selects Claude Code; every other provider
+uses V2. Claude starts check `claude --version` and `systemd-run --version` instead
+of `opencode2 --version`. The executable is the `claude` resolved by the runner's
+PATH, also used by Opus reviews. Merge agents remain V2.
+
+Worker names share suffixes across both backends: `ses_orch_<N>`,
+`ses_orch_<N>_2`, etc. Each fresh process reads the full V2 session list, then
+probes Claude names from suffix 1 upward. A Claude worker exists when its transcript
+exists or its unit is active (including before its first transcript write).
+Probing stops at the first name belonging to neither backend; the highest suffix
+from either backend wins, including V2 names beyond that gap. `start` takes the
+next suffix. No worker registry or runner state file is written.
+
+The Claude UUID is UUIDv5 of the worker name in the fixed DNS namespace
+`6ba7b810-9dad-11d1-80b4-00c04fd430c8`. Its transcript is
+`~/.claude/projects/<encoded-worktree>/<uuid>.jsonl`, where every character of the
+absolute worktree path outside `[A-Za-z0-9]` becomes `-`. The first user entry
+contains `orch-worker-model: anthropic/<model>[#<effort>]`; later processes recover
+the same model and effort from that entry. Creation time is the first user entry's
+timestamp (not preceding metadata); idle time is the transcript mtime.
+
+Each prompt launches a transient unit, without waiting for the worker to finish:
+
+```sh
+systemd-run --user --unit orch-claude-<uuid> --collect --expand-environment=no --setenv=PATH --working-directory <worktree> claude -p --resume <uuid> --model <model> --effort <effort> --permission-mode bypassPermissions "<text>"
+```
+
+The first prompt uses `--session-id` instead of `--resume` when the transcript is
+absent; `--effort` is omitted when unspecified. `--collect` allows a failed run's
+unit to be recreated; failure stays in the journal and the worker appears stopped.
+`--expand-environment=no` preserves literal `$` expressions in prompt text.
+`--setenv=PATH` passes the runner's PATH rather than the user manager's PATH.
+An active unit is the only lock: ordinary prompts wait for a later tick, with no
+queue, and systemd rejects a second launch with the same active unit name.
+
+Every Claude prompt starts with `orch-msg: <message-id>`. Dedup reads exact first
+lines of user entries; smoke-start history checks `msg_orch_<N>_smoke_` IDs,
+excluding `smoke_fix_`, across all worker suffixes just as V2 does.
+
+Print mode has no forms. When it needs an answer, the worker ends its turn with
+`orch-ask: <question>`. A line in the last assistant entry is one pending request
+(its UUID is the request ID), but only while the unit is inactive. It emits an
+`asks` notice and blocks ordinary prompts, including CI-done; a later user entry
+ends the request. Mid-turn lines in an active unit do not count.
+
+`say <N> "<text>"` sends to the latest worker through its backend with ID
+`msg_orch_<N>_say_<epoch-ms>`. For Claude it fails while the unit is active; retry
+after it stops. This is also how the orchestrator answers `orch-ask` requests.
+
+The visible Orca terminal runs `journalctl --user -f -u orch-claude-<uuid>`.
+Interrupt a hung worker with `systemctl --user stop orch-claude-<uuid>`, then send
+its next step with `say`, or explicitly relaunch with `start --model anthropic/...`.
+Never open interactive `claude --resume` on a worker: two processes must not
+write one session.
+
+### Tick
 
 `tick --dry-run` collects facts and prints each refreshed Issue's stage, its one
 proposed action, the queue/escalation notices it would send, and the total GitHub
@@ -114,12 +179,13 @@ systemctl --user daemon-reload
 systemctl --user enable --now orch-runner.timer
 ```
 
-Every tick reads local git and V2 facts for all local worker branches. On minutes
-divisible by five it lists labelled Issues and refreshes their GitHub facts.
+Every tick reads local git and worker-backend facts for all local worker branches.
+On minutes divisible by five it lists labelled Issues and refreshes their GitHub
+facts.
 Other minutes refresh only workers that became idle less than two minutes ago,
-or have an unnoticed pending form/permission. Notice IDs are checked in both
-the orchestrator's messages and inbox. The latest worker suffix wins; old worker
-sessions are not supervised or restarted.
+or have an unnoticed pending request (V2 form/permission or Claude `orch-ask`).
+Notice IDs are checked in both the orchestrator's messages and inbox.
+The latest worker suffix wins; old worker sessions are not supervised or restarted.
 
 Before processing refreshed Issues on scheduled ticks, the runner counts open
 Issues from the existing `orch:active` list. Only below the slot limit of 2

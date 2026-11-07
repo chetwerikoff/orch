@@ -30,11 +30,13 @@ rules do not settle go to the architect (duty 4).
      escalate (duty 4). Grant a permission only when it is inside the Issue scope.
    - A session active with no new output for 20 minutes is hung: `opencode2 api
      POST /api/session/<id>/interrupt`, then queue one message with its state and
-     next step.
+     next step. For Claude workers use `systemctl --user stop orch-claude-<uuid>`
+     instead, then `node scripts/runner/cli.ts say <N> "<next step>"` after it stops.
    - `no-progress`: read what the worker did in the last 20 minutes. Looping on
      one test, off task, or rebuilding something out of scope: say so and give
      the next step. Still no progress at the next notice: relaunch it once with
-     the Issue, the PR, and the open findings; after that escalate. Two steps you
+     the Issue, the PR, and the open findings (`start <N> --model anthropic/<model>[#<effort>]`
+     for Claude workers); after that escalate. Two steps you
    gave for the same problem without effect: escalate, no third attempt.
 3. **Model limit.** Workers run `openai/gpt-6.1-sol`. When one fails on a
    provider usage or rate limit, relaunch it on `zai-coding-plan/glm-5.3` (variant
@@ -55,7 +57,8 @@ rules do not settle go to the architect (duty 4).
 
 The runner queues notices into this session; nothing else wakes you. Send work
 with `opencode2 api POST /api/session/<id>/prompt --data
-'{"text":"...","delivery":"queue"}'`.
+'{"text":"...","delivery":"queue"}'`. For Claude workers use
+`node scripts/runner/cli.ts say <N> "<text>"` (fails while the worker unit is active).
 
 ## Never
 
