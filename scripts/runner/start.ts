@@ -1,5 +1,6 @@
 export type WorkerModel = { providerID: string; id: string; variant?: string };
 export const defaultWorkerModel: WorkerModel = { providerID: 'openai', id: 'gpt-6.1-sol', variant: 'medium' };
+export const defaultMergeModel: WorkerModel = { providerID: 'openai', id: 'gpt-6-luna', variant: 'medium' };
 
 export function parseStartArgs(args: string[]): { number: number; model: WorkerModel } {
   const usage = 'Usage: start <Issue number> [--model <providerID>/<modelID>[#<variant>]]';

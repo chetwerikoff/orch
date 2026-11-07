@@ -100,7 +100,7 @@ See [recipes and rationale](docs/coworker-delegation.md).
 | GPT reviewer | OpenCode V2 (`opencode2`), `openai/gpt-6.1-sol` medium | Fresh session per review; spec and PR review. |
 | Editor | Claude Code, Opus medium (T3: high) | Fresh session; decides and applies reviewer findings. |
 | Worker | OpenCode V2, `openai/gpt-6.1-sol` medium; on usage limit `zai-coding-plan/glm-5.3` high; explicit `anthropic/<model>[#<effort>]` selects Claude Code; `cursor/<model>` selects Cursor Agent (no `#variant`) | Own git worktree, visible Orca terminal (Claude/Cursor: unit journal). |
-| Merge agent | Fresh agent on `main` | Merges, adopts locally, removes the worker worktree. |
+| Merge agent | Fresh OpenCode V2 agent on `main`, `openai/gpt-6-luna` medium | Merges, adopts locally, removes the worker worktree. |
 | Orchestrator | OpenCode V2, `openai/gpt-6.1-terra` medium | Queue, escalations, runner notices about stuck workers ([prompt](prompts/orchestrator.md)). |
 | Runner | Script | Drives every deterministic post-worker transition. |
 

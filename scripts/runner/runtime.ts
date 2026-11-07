@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { decide, noticeCandidates, shouldReadGitHub, messageID, notice, queueNotice } from './decide.ts';
 import type { Facts, Session, Action, Decision } from './decide.ts';
 import { parseComments, ciFacts, tierOf, reviewerResult } from './github.ts';
-import { defaultWorkerModel } from './start.ts';
+import { defaultMergeModel, defaultWorkerModel } from './start.ts';
 import type { WorkerModel } from './start.ts';
 import { V2Backend, ClaudeBackend, readTranscript } from './backends.ts';
 import type { WorkerBackend, ReadTranscript } from './backends.ts';
@@ -256,7 +256,7 @@ export class Runner {
     if (a.kind === 'merge') {
       await this.run(this.orca(), ['--version'], this.cwd);
       const id = `ses_orch_${f.number}_merge_${f.pr!.head.slice(0, 7)}`;
-      await this.api('session.create', {}, { id, location: { directory: operator }, model: defaultWorkerModel });
+      await this.api('session.create', {}, { id, location: { directory: operator }, model: defaultMergeModel });
       await this.prompt(id, messageID(f.number, 'merge', f.pr!.head), `Merge chetwerikoff/orch PR #${f.pr!.number} at exact head ${f.pr!.head}. Issue #${f.number}. Reread live readiness; adopt main in this operator checkout, apply local adoption steps, and clean up only the exact worker worktree. Follow merge-with-local-adoption.`, [{ id: 'merge-with-local-adoption' }]);
       return this.terminal(operator, id);
     }
