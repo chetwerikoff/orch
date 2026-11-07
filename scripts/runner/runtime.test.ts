@@ -203,6 +203,9 @@ test('READY twice starts exactly one deterministic merge session and exact-ident
   f.live[`ses_orch_1_merge_${sha.slice(0, 7)}`] = { type: 'running' };
   await f.runner.tick(false, epoch);
   assert.equal(f.calls.filter(c => c.file === 'opencode2' && c.args[1] === 'session.create').length, 1);
+  const create = f.calls.find(c => c.file === 'opencode2' && c.args[1] === 'session.create')!;
+  assert.deepEqual(JSON.parse(create.args[create.args.indexOf('--data') + 1]).model,
+    { providerID: 'openai', id: 'gpt-6-luna', variant: 'medium' });
   assert.equal(f.calls.filter(c => c.file === '/orca-cli' && c.args[0] === 'terminal').length, 1);
   assert.ok(f.calls.find(c => c.file === '/orca-cli' && c.args[0] === 'terminal')!.args.includes('identity:wt2:local:exact'));
   delete f.live[`ses_orch_1_merge_${sha.slice(0, 7)}`];
