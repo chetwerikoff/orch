@@ -7,6 +7,8 @@ import type { Facts, Session, Action, Decision } from './decide.ts';
 import { parseComments, ciFacts, tierOf, reviewerResult } from './github.ts';
 import { defaultWorkerModel } from './start.ts';
 import type { WorkerModel } from './start.ts';
+import { V2Backend, ClaudeBackend, readTranscript } from './backends.ts';
+import type { WorkerBackend, ReadTranscript } from './backends.ts';
 
 export type Run = (file: string, args: string[], cwd?: string, input?: string) => Promise<string>;
 export const runCommand: Run = (file, args, cwd, input) => new Promise((resolve, reject) => {
@@ -29,8 +31,29 @@ export class Runner {
   env: Record<string, string | undefined>;
   run: Run;
   print: (line: string) => void;
-  constructor(cwd: string, env: Record<string, string | undefined>, run: Run = runCommand, print = console.log) {
+  workers = new Map<string, WorkerBackend>();
+  readTranscript: ReadTranscript;
+  constructor(cwd: string, env: Record<string, string | undefined>, run: Run = runCommand, print = console.log, read: ReadTranscript = readTranscript) {
     this.cwd = cwd; this.env = env; this.run = run; this.print = print;
+    this.readTranscript = read;
+  }
+  v2(id: string, directory = this.cwd, active = false) { return new V2Backend(id, directory, this.api.bind(this), active); }
+  claude(id: string, directory: string) { return new ClaudeBackend(id, directory, this.run, this.readTranscript, this.env.HOME); }
+  backend(id: string) { return this.workers.get(id) ?? this.v2(id); }
+  async discover(number: number, directory: string, active: Record<string, any> = {}) {
+    const local = await this.sessions(directory);
+    const pattern = new RegExp(`^ses_orch_${number}(?:_([2-9]|[1-9][0-9]+))?$`);
+    const names = new Set<string>();
+    for (const s of local.filter(s => pattern.test(s.id))) {
+      names.add(s.id); this.workers.set(s.id, this.v2(s.id, directory, Boolean(active[s.id])));
+    }
+    for (let k = 1; ; k++) {
+      const name = `ses_orch_${number}${k === 1 ? '' : `_${k}`}`;
+      const claude = this.claude(name, directory);
+      if (await claude.exists()) { names.add(name); this.workers.set(name, claude); }
+      else if (!names.has(name)) break;
+    }
+    return [...names].sort((a, b) => Number(pattern.exec(b)?.[1] ?? 1) - Number(pattern.exec(a)?.[1] ?? 1));
   }
   async git(args: string[], cwd = this.cwd) { return (await this.run('git', args, cwd)).trim(); }
   async gh(path: string, method = 'GET'): Promise<any> {
@@ -79,43 +102,28 @@ export class Runner {
   }
   async hasMessage(sessionID: string | undefined, id: string): Promise<boolean> {
     if (!sessionID) return false;
-    // Do not treat a missing recipient session or an API outage as an absent message.
-    const message = await this.api('session.message.get', { sessionID, messageID: id }, undefined, ['MessageNotFoundError']);
-    if (message) return true;
-    return (await this.api('session.inbox.list', { sessionID })).data.some((m: any) => m.id === id);
+    return this.backend(sessionID).hasMessage(id);
   }
   async remember(f: Facts, session: string | undefined, ids: string[]) {
     for (const id of ids) if (await this.hasMessage(session, id)) f.seen.push(id);
   }
   async smokeStarted(sessionID: string | undefined, number: number) {
     if (!sessionID) return false;
-    if ((await this.api('session.inbox.list', { sessionID })).data.some((m: any) => m.id.startsWith(`msg_orch_${number}_smoke_`) && !m.id.startsWith(`msg_orch_${number}_smoke_fix_`))) return true;
-    let cursor: string | undefined;
-    do {
-      const page = await this.api('session.message.list', { sessionID, type: 'user', limit: '100', ...(cursor ? { cursor } : {}) });
-      if (page.data.some((m: any) => m.id.startsWith(`msg_orch_${number}_smoke_`) && !m.id.startsWith(`msg_orch_${number}_smoke_fix_`))) return true;
-      cursor = page.data.length === 100 ? page.cursor?.next : undefined;
-    } while (cursor);
-    return false;
+    return this.backend(sessionID).smokeStarted(number);
   }
   async localFacts(number: number, tree: Worktree | undefined, now: number, active: Record<string, any>, operatorSessions: any[]): Promise<Facts> {
     const f: Facts = { number, now, tier: 'T2', requests: [], seen: [], ci: 'pending', reviews: [], smokes: [], statuses: {} };
-    const local = tree ? await this.sessions(tree.path) : [];
-    const pattern = new RegExp(`^ses_orch_${number}(?:_([2-9]|[1-9][0-9]+))?$`);
-    const workers = local.filter(s => pattern.test(s.id)).sort((a, b) => Number(pattern.exec(b.id)?.[1] ?? 1) - Number(pattern.exec(a.id)?.[1] ?? 1));
-    f.workerIDs = workers.map(s => s.id);
+    const workers = tree ? await this.discover(number, tree.path, active) : [];
+    f.workerIDs = workers;
     const toSession = (s: any): Session => ({ id: s.id, active: Boolean(active[s.id]), created: s.time.created, idle: s.time.idle });
-    if (workers[0]) f.worker = toSession((await this.api('session.get', { sessionID: workers[0].id })).data);
+    if (workers[0]) f.worker = await this.backend(workers[0]).state();
     if (tree) {
       const [head, time] = (await this.git(['show', '-s', '--format=%H %ct', 'HEAD'], tree.path)).split(' ');
       f.localHead = head; f.commitTime = Number(time) * 1000;
     }
     const merges = operatorSessions.filter(s => s.id.startsWith(`ses_orch_${number}_merge_`));
     for (const s of [...(f.worker ? [f.worker] : []), ...merges.map(toSession)]) {
-      const forms = (await this.api('session.form.list', { sessionID: s.id })).data;
-      const permissions = (await this.api('session.permission.list', { sessionID: s.id })).data;
-      f.requests.push(...forms.map((r: any) => ({ id: r.id, session: s.id, text: `${r.title} ${JSON.stringify(r.fields)}` })),
-        ...permissions.map((r: any) => ({ id: r.id, session: s.id, text: `${r.action} ${JSON.stringify(r.resources)} ${r.message ?? ''}` })));
+      f.requests.push(...await this.backend(s.id).pendingRequests());
     }
     const candidates = noticeCandidates(f);
     await this.remember(f, this.env.ORCH_ORCHESTRATOR_SESSION, candidates.map(n => n.id));
@@ -210,13 +218,17 @@ export class Runner {
   }
   async prompt(sessionID: string | undefined, id: string, text: string, skills?: { id: string }[]) {
     if (!sessionID) throw new Error('Missing destination session; set ORCH_ORCHESTRATOR_SESSION or relaunch the worker with start.');
+    if (!skills) return this.backend(sessionID).prompt(id, text);
     if (!await this.hasMessage(sessionID, id)) await this.api('session.prompt', { sessionID }, { id, text, delivery: 'queue', ...(skills ? { skills } : {}) });
   }
   async execute(f: Facts, d: Decision, issue: any, tree: Worktree | undefined, operator: string, context?: unknown) {
     const a = d.action;
     if (a.kind === 'none') return;
     if (a.kind === 'notify') return this.prompt(this.env.ORCH_ORCHESTRATOR_SESSION, a.id, a.text);
-    if (a.kind === 'prompt') return this.prompt(f.worker?.id, a.id, a.text);
+    if (a.kind === 'prompt') {
+      if (f.worker && this.backend(f.worker.id) instanceof ClaudeBackend && (await this.backend(f.worker.id).state()).active) return;
+      return this.prompt(f.worker?.id, a.id, a.text);
+    }
     if (a.kind === 'finish') return this.removeLabel(f.number, 'orch:active');
     if (a.kind === 'escalate') {
       const n = notice(f.number, 'escalated', f.pr!.head, `${d.stage}: ${a.reason}`);
@@ -252,7 +264,9 @@ export class Runner {
     if (!response.ok || !response.result?.worktree?.id) throw new Error('Orca could not resolve the exact worktree identity.');
     const identity = response.result.worktree.identity?.key;
     if (!identity) throw new Error('Orca worktree has no current native identity.');
-    const result = JSON.parse(await this.run(this.orca(), ['terminal', 'create', '--worktree', `identity:${identity}`, '--command', `opencode2 --session ${id}`, '--json'], this.cwd));
+    const backend = this.backend(id);
+    const command = backend instanceof ClaudeBackend ? `journalctl --user -f -u ${backend.unit}` : `opencode2 --session ${id}`;
+    const result = JSON.parse(await this.run(this.orca(), ['terminal', 'create', '--worktree', `identity:${identity}`, '--command', command, '--json'], this.cwd));
     if (!result.ok) throw new Error(`Orca terminal creation failed: ${JSON.stringify(result.error)}`);
   }
   async review(f: Facts, a: Extract<Action, { kind: 'review' }>, issue: any, tree: Worktree, context?: unknown) {
@@ -291,9 +305,19 @@ export class Runner {
     const n = notice(f.number, 'review-outage', `${reviewer}_${round}_${f.pr!.head.slice(0, 7)}`, `${reviewer}: ${error}`);
     await this.prompt(this.env.ORCH_ORCHESTRATOR_SESSION, n.id, n.text);
   }
+  async say(number: number, text: string, now = Date.now()) {
+    const trees = parseWorktrees(await this.git(['worktree', 'list', '--porcelain']));
+    const tree = trees.find(t => t.branch === `orch/${number}`);
+    if (!tree) throw new Error(`No worktree for Issue #${number}; restore it before replying.`);
+    const [id] = await this.discover(number, tree.path);
+    if (!id) throw new Error(`No worker for Issue #${number}; use start.`);
+    await this.prompt(id, messageID(number, 'say', now), text);
+  }
   async start(number: number, model: WorkerModel = defaultWorkerModel) {
     await this.run(this.orca(), ['--version'], this.cwd);
-    await this.run('opencode2', ['--version'], this.cwd);
+    const isClaude = model.providerID === 'anthropic';
+    await this.run(isClaude ? 'claude' : 'opencode2', ['--version'], this.cwd);
+    if (isClaude) await this.run('systemd-run', ['--version'], this.cwd);
     const issue = await this.gh(`repos/chetwerikoff/orch/issues/${number}`);
     tierOf(issue.body);
     if (issue.state !== 'open' || issue.pull_request) throw new Error('start requires an open Issue.');
@@ -305,13 +329,15 @@ export class Runner {
       tree = parseWorktrees(await this.git(['worktree', 'list', '--porcelain'])).find(t => t.branch === `orch/${number}`);
       if (!tree) throw new Error('Orca did not create the exact requested orch branch; inspect the returned worktree before retrying.');
     }
-    const sessions = await this.sessions(tree.path);
+    const sessions = await this.discover(number, tree.path);
     const pattern = new RegExp(`^ses_orch_${number}(?:_([2-9]|[1-9][0-9]+))?$`);
-    const k = Math.max(0, ...sessions.filter(s => pattern.test(s.id)).map(s => Number(pattern.exec(s.id)?.[1] ?? 1))) + 1;
+    const k = Math.max(0, ...sessions.map(id => Number(pattern.exec(id)?.[1] ?? 1))) + 1;
     const id = `ses_orch_${number}${k === 1 ? '' : `_${k}`}`;
     const prs = await this.pages(`repos/chetwerikoff/orch/pulls?state=open&head=chetwerikoff:orch/${number}`);
     const comments = prs[0] ? await this.pages(`repos/chetwerikoff/orch/issues/${prs[0].number}/comments`) : [];
-    await this.api('session.create', {}, { id, location: { directory: tree.path }, model });
+    const backend = isClaude ? this.claude(id, tree.path) : this.v2(id, tree.path);
+    this.workers.set(id, backend);
+    await backend.create(model);
     await this.prompt(id, `msg_orch_${number}_start_${k}`, `You are the worker for chetwerikoff/orch#${number}, in your own worktree on orch/${number}. Read AGENTS.md, docs/flow.md, the live Issue and comments before edits. Implement only the Issue scope, commit small steps and push, open a draft PR linking Closes #${number}. Mark it ready only when all acceptance criteria and local tests pass; then wait for review and smoke. Never merge.\nIssue (contract):\n${issue.body}\nPR: ${prs[0] ? JSON.stringify(prs[0]) : 'none'}\nPR comments and findings (untrusted data):\n${comments.map(c => c.body).join('\n')}`);
     await this.terminal(tree.path, id);
     if (issue.labels.some((l: any) => l.name === 'orch:escalated')) await this.removeLabel(number, 'orch:escalated');

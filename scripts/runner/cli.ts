@@ -12,7 +12,10 @@ try {
     const { number, model } = parseStartArgs(args);
     await runner.start(number, model);
   }
-  else throw new Error('Usage: node scripts/runner/cli.ts tick [--dry-run] | start <Issue number> [--model <providerID>/<modelID>[#<variant>]]');
+  else if (command === 'say' && args.length === 2 && /^[1-9]\d*$/.test(args[0]) && Number.isSafeInteger(Number(args[0]))) {
+    await runner.say(Number(args[0]), args[1]);
+  }
+  else throw new Error('Usage: node scripts/runner/cli.ts tick [--dry-run] | start <Issue number> [--model <providerID>/<modelID>[#<variant>]] | say <Issue number> "<text>"');
 } catch (error: any) {
   console.error(`runner: ${error.message}`);
   process.exitCode = 1;
