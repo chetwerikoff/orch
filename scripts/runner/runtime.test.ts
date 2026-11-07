@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Runner, parseWorktrees, runCommand } from './runtime.ts';
 import type { Run } from './runtime.ts';
-import { parseComments, ciState, ciFacts, reviewerResult, tierOf } from './github.ts';
+import { parseComments, ciState, ciFacts, reviewerResult, tierOf, smokeNotApplicable } from './github.ts';
 import { decide } from './decide.ts';
 import { facts } from './decide.test.ts';
 import { parseStartArgs } from './start.ts';
@@ -130,6 +130,34 @@ test('CI excludes review statuses, binds newest check run, waits for actual CI',
   assert.equal(ciState([run, { ...run, id: 2, conclusion: 'success' }], []), 'success');
   assert.equal(ciState([{ ...run, status: 'queued' }], []), 'pending');
   assert.equal(ciState([], [{ context: 'external', state: 'error' }]), 'failure');
+});
+test('not-applicable is read only from a complete smoke-test-plan fence', () => {
+  const fence = (plan: string) => `\`\`\`smoke-test-plan\n${plan}\n\`\`\``;
+  assert.equal(smokeNotApplicable(`${issueBody}\n${fence('not-applicable: true\nreason: text only')}`), true);
+  assert.equal(smokeNotApplicable(fence('  not-applicable: true').replaceAll('\n', '\r\n')), true);
+  for (const body of [issueBody, 'not-applicable: true', fence('not-applicable: false'), fence('not-applicable: trueish'), fence('- action: check | expected: not-applicable: true'), '```other\nnot-applicable: true\n```', '```smoke-test-plan\nnot-applicable: true']) {
+    assert.equal(smokeNotApplicable(body), false, body);
+  }
+});
+test('Issue smoke plan drives READY without smoke prompting; executable plans still prompt', async () => {
+  for (const plan of ['not-applicable: true\nreason: text only', '- action: check | expected: pass']) {
+    const f = fixture();
+    f.issues.get(1).body += `\n\`\`\`smoke-test-plan\n${plan}\n\`\`\``;
+    f.comments.set(101, [trustedComment(`orch-review\nhead-sha: ${sha}\nreviewer: gpt\nround: 1\nresult: NO_FINDINGS\nNO_FINDINGS`)]);
+    f.statuses.set(sha, [{ context: 'orch-review/gpt', state: 'success' }]);
+    const state = facts({ number: 1 });
+    await f.runner.githubFacts(state, f.issues.get(1), []);
+    const d = decide(state);
+    if (plan.startsWith('not-applicable')) {
+      assert.deepEqual(d, { stage: 'READY', action: { kind: 'merge' } });
+      f.prs.get(1).mergeable_state = 'behind';
+      await f.runner.githubFacts(state, f.issues.get(1), []);
+      assert.equal(decide(state).stage, 'FIXING');
+    } else {
+      assert.equal(d.stage, 'SMOKE'); assert.equal(d.action.kind, 'prompt');
+      if (d.action.kind === 'prompt') assert.match(d.action.text, /Run every Issue smoke-test-plan scenario/);
+    }
+  }
 });
 test('dry-run tick makes reads only and reports one stage per active Issue', async () => {
   const f = fixture(); await f.runner.tick(true, epoch);
