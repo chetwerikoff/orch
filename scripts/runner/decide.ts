@@ -9,7 +9,7 @@ export type Facts = {
   localHead?: string; commitTime?: number; seen: string[];
   pr?: { number: number; head: string; draft: boolean; merged: boolean; behind: boolean; conflict: boolean };
   ci: 'pending' | 'success' | 'failure'; ciFailures?: string[]; reviews: Review[]; smokes: Smoke[];
-  statuses: Record<string, string>; escalated?: boolean; smokeStarted?: boolean;
+  statuses: Record<string, string>; escalated?: boolean; smokeStarted?: boolean; smokeNotApplicable?: boolean;
 };
 export type Action =
   | { kind: 'none' }
@@ -80,7 +80,7 @@ export function decide(f: Facts): Decision {
     const current = last.every(r => r.head === p.head);
     const incomplete = !complete || (last.some(r => r.head === p.head) && !current);
     const findings = last.some(r => r.result === 'FINDINGS');
-    const pass = f.smokes.some(s => s.result === 'PASS');
+    const pass = f.smokeNotApplicable || f.smokes.some(s => s.result === 'PASS');
     const failure = f.smokes.filter(s => s.result !== 'PASS');
     const latestFailure = failure.at(-1);
     // Once smoke has started, its fixes never open another review round.

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { decide, noticeCandidates, shouldReadGitHub, messageID, notice, queueNotice } from './decide.ts';
 import type { Facts, Session, Action, Decision } from './decide.ts';
-import { parseComments, ciFacts, tierOf, reviewerResult } from './github.ts';
+import { parseComments, ciFacts, tierOf, smokeNotApplicable, reviewerResult } from './github.ts';
 import { defaultMergeModel, defaultWorkerModel } from './start.ts';
 import type { WorkerModel } from './start.ts';
 import { V2Backend, ClaudeBackend, readTranscript } from './backends.ts';
@@ -141,6 +141,7 @@ export class Runner {
   }
   async githubFacts(f: Facts, issue: any, operatorSessions: any[]) {
     f.tier = tierOf(issue.body);
+    f.smokeNotApplicable = smokeNotApplicable(issue.body);
     f.escalated = issue.labels.some((l: any) => l.name === 'orch:escalated');
     const prs = await this.pages(`repos/chetwerikoff/orch/pulls?state=all&head=chetwerikoff:orch/${f.number}`);
     const candidate = prs.find(p => p.state === 'open') ?? prs.find(p => p.merged_at);

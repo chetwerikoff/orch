@@ -100,6 +100,19 @@ test('READY merge identity, drift and merged cleanup', () => {
   f.pr!.behind = false; f.pr!.conflict = true; assert.equal(decide(f).stage, 'FIXING');
   f.pr!.merged = true; assert.equal(decide(f).action.kind, 'finish');
 });
+test('not-applicable smoke goes straight to READY but preserves CI, review and base guards', () => {
+  const f = facts({ ...reviewed, smokeNotApplicable: true });
+  assert.deepEqual(decide(f), { stage: 'READY', action: { kind: 'merge' } });
+  f.ci = 'pending'; assert.equal(decide(f).stage, 'CI');
+  f.ci = 'failure'; assert.equal(decide(f).stage, 'FIXING');
+  f.ci = 'success'; f.pr!.behind = true;
+  assert.equal(decide(f).stage, 'FIXING');
+  assert.equal(decide(f).action.kind, 'prompt');
+  f.pr!.behind = false; f.pr!.conflict = true;
+  assert.equal(decide(f).stage, 'FIXING');
+  assert.equal(decide(facts({ smokeNotApplicable: true })).stage, 'REVIEW');
+  assert.equal(decide(facts({ smokeNotApplicable: true, reviews: [{ ...clean, result: 'FINDINGS' }], statuses: { 'orch-review/gpt': 'failure' } })).stage, 'FIXING');
+});
 test('worker inability is an asks/stopped notice, never a runner escalation', () => {
   const f = facts({ reviews: [{ ...clean, result: 'FINDINGS' }], statuses: { 'orch-review/gpt': 'failure' },
     worker: { id: 'ses_orch_4', active: false, created: 0, idle: 100 }, seen: [messageID(4, 'review_1', 'abc')] });

@@ -100,8 +100,13 @@ Same model as orchestrator-pack.
 - The Issue declares a `smoke-test-plan` ([template](issue-template.md)):
   ordered scenarios with `action` and `expected`, or `not-applicable` with a
   reason for text-only work.
-- The **worker (PR owner)** runs every scenario in order, in its own PR checkout,
-  after review is done and CI is green. No other agent repeats them.
+- A plan with `not-applicable: true` counts as a smoke PASS: after review is
+  complete and current-head CI is green, the runner goes straight to READY
+  without prompting the worker or requiring a smoke report. A branch behind
+  main or conflicting still goes to FIXING.
+- For executable plans, the **worker (PR owner)** runs every scenario in order,
+  in its own PR checkout, after review is done and CI is green. No other agent
+  repeats them.
 - The worker publishes one PR comment starting with the line `orch-smoke-report`:
 
   ```text
@@ -112,8 +117,6 @@ Same model as orchestrator-pack.
     - action: <exact Issue action> | expected: <exact Issue expected> | observed: <what happened> | outcome: pass|fail
   ```
 
-  For a `not-applicable` plan, the report is `result: PASS`, then `scenarios:`
-  on its own line, then one line `  - not-applicable: <Issue reason>`.
   A PASS lists every declared scenario in plan order with identical
   `action | expected` text. A FAIL or BLOCKED lists the executed prefix and ends on
   the failing row. No secrets or private data in the report.

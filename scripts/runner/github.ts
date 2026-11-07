@@ -45,6 +45,11 @@ export function tierOf(body: string): Facts['tier'] {
   return tier as Facts['tier'];
 }
 
+export function smokeNotApplicable(body: string): boolean {
+  const plan = /^```smoke-test-plan[^\S\r\n]*\r?\n([\s\S]*?)^```[^\S\r\n]*\r?$/m.exec(body)?.[1];
+  return plan !== undefined && /^[\t ]*not-applicable:[\t ]*true[\t ]*\r?$/m.test(plan);
+}
+
 export function reviewerResult(output: string): { result: Review['result']; text: string } | undefined {
   const end = '\norch-review-complete';
   if (!output.trimEnd().endsWith(end)) return;
