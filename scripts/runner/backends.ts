@@ -64,7 +64,7 @@ export function claudeUUID(name: string) {
   const h = hash.subarray(0, 16).toString('hex');
   return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
 }
-export type Transcript = { entries: any[]; mtime: number };
+export type Transcript = { entries: any[]; mtime: number; birthtime?: number };
 export type ReadTranscript = (path: string) => Promise<Transcript | undefined>;
 export const readTranscript: ReadTranscript = async path => {
   try {
@@ -75,7 +75,8 @@ export const readTranscript: ReadTranscript = async path => {
       if (!line) return [];
       try { return [JSON.parse(line)]; } catch (error) { if (i === lines.length - 1) return []; throw error; }
     });
-    return { entries, mtime: (await stat(path)).mtimeMs };
+    const info = await stat(path);
+    return { entries, mtime: info.mtimeMs, birthtime: info.birthtimeMs };
   } catch (error: any) { if (error.code === 'ENOENT') return undefined; throw error; }
 };
 const entryText = (e: any): string => typeof e.message?.content === 'string' ? e.message.content

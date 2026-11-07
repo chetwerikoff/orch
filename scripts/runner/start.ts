@@ -8,5 +8,6 @@ export function parseStartArgs(args: string[]): { number: number; model: WorkerM
   if (args.length === 1) return { number: Number(args[0]), model: defaultWorkerModel };
   const match = /^([^\s/#]+)\/([^\s#]+)(?:#([^\s/#]+))?$/.exec(args[2]);
   if (!match) throw new Error(usage);
+  if (match[1] === 'cursor' && match[3]) throw new Error('Cursor models do not accept #<variant>; put parameters inside the model ID.');
   return { number: Number(args[0]), model: { providerID: match[1], id: match[2], ...(match[3] ? { variant: match[3] } : {}) } };
 }
