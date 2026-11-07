@@ -34,6 +34,9 @@ Out: <what must not change, if not obvious>
   prompt, or skill text only, the fence holds `not-applicable: true` and a
   one-line `reason: <text>` instead. Put entrypoint and environment inside the
   `action` text, not as separate lines.
+- Smoke for runner changes runs `node scripts/runner/cli.ts tick` from the PR
+  checkout with the runner unit's environment and `orch-runner.timer` stopped
+  ([runner](runner.md#commands)); `orch-runner.service` runs `main`, not the PR.
 - A check that no stale term remains is an acceptance criterion with the exact
   `rg` command and the expected empty result, not a smoke line.
 - Tier rules: [tiering](tiering.md).
