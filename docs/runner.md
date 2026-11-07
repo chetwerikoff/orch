@@ -1,7 +1,8 @@
 # Runner
 
 The runner implements [the execution flow](flow.md). GitHub is workflow state;
-worker backends own sessions and delivery (OpenCode V2 by default, or Claude Code).
+worker backends own sessions and delivery (OpenCode V2 by default, Claude Code,
+or Cursor Agent).
 There is no runner state file.
 
 ## Requirements
@@ -9,7 +10,8 @@ There is no runner state file.
 - Node **24** (native TypeScript), `git`, authenticated `gh`, `opencode2`,
   Claude Code (`claude`, for Claude workers and T3 reviews), and the running Orca
   desktop/CLI.
-  Claude workers also require user systemd (`systemd-run`, `systemctl`, `journalctl`).
+  Cursor workers require `cursor-agent`. Claude and Cursor workers also require
+  user systemd (`systemd-run`, `systemctl`, `journalctl`).
 - A local operator checkout on `main` in this repository's git worktree list.
   Run commands from a checkout of this repository. Worker branches are `orch/<N>`.
 - `ORCA_CLI_COMMAND`: the exact executable for the selected Orca installation.
@@ -36,6 +38,7 @@ and deletion in fake-backed tests until a live smoke run is explicitly authorize
 node scripts/runner/cli.ts start 12
 node scripts/runner/cli.ts start 12 --model zai-coding-plan/glm-5.3#high
 node scripts/runner/cli.ts start 12 --model anthropic/sonnet#high
+node scripts/runner/cli.ts start 12 --model 'cursor/claude-opus-4-8[effort=high]'
 node scripts/runner/cli.ts say 12 "Continue with the Issue's specified option."
 node scripts/runner/cli.ts tick --dry-run
 node --test scripts/runner
@@ -59,17 +62,19 @@ change.
 
 ### Claude Code workers
 
-An `anthropic/<model>[#<effort>]` model selects Claude Code; every other provider
-uses V2. Claude starts check `claude --version` and `systemd-run --version` instead
-of `opencode2 --version`. The executable is the `claude` resolved by the runner's
+An `anthropic/<model>[#<effort>]` model selects Claude Code; `cursor/` selects
+Cursor Agent; every other provider uses V2. Claude starts check `claude --version`
+and `systemd-run --version` instead of `opencode2 --version`.
+The executable is the `claude` resolved by the runner's
 PATH, also used by Opus reviews. Merge agents remain V2.
 
-Worker names share suffixes across both backends: `ses_orch_<N>`,
-`ses_orch_<N>_2`, etc. Each fresh process reads the full V2 session list, then
-probes Claude names from suffix 1 upward. A Claude worker exists when its transcript
+Worker names share suffixes across all three backends: `ses_orch_<N>`,
+`ses_orch_<N>_2`, etc. Each fresh process reads the full V2 session list and Cursor
+transcript names, then probes Claude names from suffix 1 upward.
+A Claude worker exists when its transcript
 exists or its unit is active (including before its first transcript write).
-Probing stops at the first name belonging to neither backend; the highest suffix
-from either backend wins, including V2 names beyond that gap. `start` takes the
+Probing stops at the first name belonging to none of the backends; the highest suffix
+from any backend wins, including V2 and Cursor names beyond that gap. `start` takes the
 next suffix. No worker registry or runner state file is written.
 
 The Claude UUID is UUIDv5 of the worker name in the fixed DNS namespace
@@ -113,6 +118,53 @@ Interrupt a hung worker with `systemctl --user stop orch-claude-<uuid>`, then se
 its next step with `say`, or explicitly relaunch with `start --model anthropic/...`.
 Never open interactive `claude --resume` on a worker: two processes must not
 write one session.
+
+### Cursor Agent workers
+
+`start <N> --model cursor/<model>` selects Cursor. Use a model from
+`cursor-agent --list-models`; quote IDs containing bracket parameters. A
+`#<variant>` suffix is a usage error: Cursor parameters belong inside the model ID.
+Start checks `cursor-agent --version` and `systemd-run --version`. Cursor is only
+a worker backend; merge agents and reviewers are unchanged.
+
+Start runs `cursor-agent create-chat` (no workspace option), which returns a bare
+UUID. The first prompt starts with `orch-msg: <message-id>`, then
+`orch-worker: ses_orch_<N>[_k]`, then `orch-worker-model: cursor/<model>` and the
+existing start text. Later processes recover identity and model from that first
+user message in
+`~/.cursor/projects/<encoded-worktree>/agent-transcripts/<chat-id>/<chat-id>.jsonl`.
+Encoding drops the absolute path's leading `/` and replaces each `/`, `.`, and `_`
+with `-`: `/tmp/orch-lens-probe/a.b_c` becomes `tmp-orch-lens-probe-a-b-c`.
+A missing project directory means no chats. A transcript without a first-user
+`orch-worker:` marker does not exist for discovery, so its suffix may be reused.
+Two transcripts with the same worker marker make every operation on that worker
+fail with both chat IDs named; the runner never chooses one. There is no store.
+
+Every prompt (including orchestrator replies via `say`) uses the same transient
+unit and does not wait for completion:
+
+```sh
+systemd-run --user --collect --unit orch-cursor-<chat-id> --expand-environment=no --setenv=PATH --working-directory <worktree> cursor-agent -p --resume <chat-id> --model <model> --force --trust --output-format text "<text>"
+```
+
+The unit's working directory determines the transcript project. `--collect`
+permits another launch after failure; literal prompt text and PATH handling match
+Claude. The active unit is the only lock: ordinary prompts wait for another tick;
+`say <N> "<text>"` fails while active. Never run a concurrent interactive resume.
+Dedup checks the exact `orch-msg:` first prompt line in user messages, after
+Cursor's timestamp/`<user_query>` prefix (when present). Smoke history
+counts `msg_orch_<N>_smoke_` IDs but not `msg_orch_<N>_smoke_fix_`, across suffixes.
+Idle time is transcript mtime; creation time is file birth time, not an entry
+timestamp. Pending requests are empty; the orchestrator reads a last-message
+question as `asks` on a stopped notice.
+
+The visible Orca terminal follows `journalctl --user -f -u orch-cursor-<chat-id>`.
+Read the transcript for last messages. Interrupt with
+`systemctl --user stop orch-cursor-<chat-id>`, then send the next step via `say`,
+or relaunch with `start <N> --model cursor/<model>`.
+Print-mode transcripts and `--resume` continuation were confirmed on
+cursor-agent 2026.10.22. If an installed version stops supporting either, stop
+and report it in the PR; do not add a store.
 
 ### Tick
 
