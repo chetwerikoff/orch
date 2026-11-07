@@ -91,6 +91,8 @@ available `orca-cli` skill for current command syntax and identity handling.
 3. Stop/close only native terminals and processes bound to this exact target.
    Preserve mixed or unrelated panes. Confirm target quiescence before removal;
    unreadable process state is uncertainty, not proof of no holders.
+   The user's service manager (`systemd --user`) and its `(sd-pam)` helper deny
+   cwd reads by design; they never hold a worktree and are not uncertainty.
 4. Remove only `WT` through the supported lifecycle. Do not use broad path/name
    matching, bulk prune, recursive deletion, or a force fallback to override an
    ambiguous target, live holder, or permission failure.
