@@ -277,7 +277,10 @@ train state file: branch names are the state.
   unclassified this tick: no landing, no deletion, members stay suppressed.
 - **Suppression.** On scheduled ticks members of a current non-red or landed
   train get no `merge`/`base` action; on other ticks members of any listed
-  train branch do not either.
+  train branch do not either. A failed train evaluation suppresses every listed
+  train's members for that tick. A landed train holds a member only while its
+  PR head is still the head the train landed; a drifted head resumes the per-PR
+  path so `merged_at` can appear.
 - **Branch.** `orch/train/<main sha7>/<n1>-<n2>-…`, members in ascending Issue
   order. Build fetches `origin main refs/heads/orch/<N>` per candidate, checks
   each fetched head against the REST PR head (mismatch drops the member), then
@@ -296,7 +299,8 @@ train state file: branch names are the state.
   next scheduled tick rebuilds); anything else is a runner error and the train
   stays. Landed trains complete idempotently: close open member Issues, start
   `ses_orch_train_<sha7>` (merge model) with the `merge-with-local-adoption`
-  skill and an Orca terminal, and delete the branch only after that session
+  skill and an Orca terminal — re-prompting it if it exists but was never
+  prompted — and delete the branch only after that session
   stops and every member still listed with `orch:active` reads `merged_at`.
 - **Push credential.** The landing push uses the credential helper configured
   for the operator checkout (`gh auth git-credential`). A train with a member

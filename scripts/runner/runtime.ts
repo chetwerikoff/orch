@@ -237,7 +237,12 @@ export class Runner {
       else {
         const tickContext: TrainTick = { dryRun, now, refs, issues, localTrees, collected, failedIssues, operator: operator.path, operatorSessions };
         try { await this.evaluateTrains(tickContext, suppressed); }
-        catch (error) { failIssue(0, error); }
+        catch (error) {
+          // A failed train evaluation must not unleash member merge/base actions:
+          // every listed train's members stay suppressed until the next tick.
+          for (const train of refs.trains) for (const n of train.members) suppressed.add(n);
+          failIssue(0, error);
+        }
       }
     }
     for (const { f, d: plan, issue, tree, context } of collected) {
@@ -275,10 +280,11 @@ export class Runner {
           this.print(`train ${train.name} unclassified: member facts failed this tick`);
           continue;
         }
-        let landed: boolean, base: string | undefined;
+        let landed = false, base: string | undefined, chain: { base: string; heads: Map<number, string> } | undefined;
         try {
           landed = train.sha === t.refs.main || await this.isAncestor(train.sha, t.refs.main);
-          base = landed ? undefined : await this.trainBase(train, factsOf, t.refs.main);
+          if (landed) chain = await this.trainChain(train);
+          else base = await this.trainBase(train, factsOf, t.refs.main);
         } catch (error) {
           if (!t.dryRun) throw error;
           for (const n of train.members) suppressed.add(n);
@@ -287,7 +293,12 @@ export class Runner {
           continue;
         }
         if (landed) {
-          for (const n of train.members) suppressed.add(n);
+          // Suppression holds only while the member's PR head is still the head the
+          // train landed; a drifted head resumes the per-PR path so merged_at can appear.
+          for (const n of train.members) {
+            const f = factsOf.get(n);
+            if (!chain || !f?.pr || f.pr.head === chain.heads.get(n)) suppressed.add(n);
+          }
           this.print(`train ${train.name} landed`);
           await this.landedTrain(train, t);
           continue;
@@ -326,24 +337,31 @@ export class Runner {
     await this.buildTrain(t, suppressed);
   }
 
-  // The base SHA when the train is current: origin/main equals its base, its
-  // first-parent chain is exactly one --no-ff merge per member back to the base,
-  // each merge's second parent equals that member's PR head, and every member is
-  // still a candidate on this tick.
-  async trainBase(train: TrainRef, factsOf: Map<number, Facts>, main: string): Promise<string | undefined> {
+  // The train's first-parent chain when it is well-formed: exactly one two-parent
+  // merge commit per member back to the base, second parents in member order.
+  async trainChain(train: TrainRef): Promise<{ base: string; heads: Map<number, string> } | undefined> {
     const lines = (await this.run('git', ['log', '--first-parent', `--max-count=${train.members.length + 1}`, '--format=%H %P', train.sha], this.cwd))
       .trim().split('\n').filter(Boolean).map(line => line.split(' '));
     if (lines.length !== train.members.length + 1) return;
-    const base = lines.at(-1)![0];
-    if (base !== main) return;
+    const heads = new Map<number, string>();
     const order = [...train.members].reverse(); // the tip is the last member merged
     for (let i = 0; i < order.length; i++) {
       const [, p1, p2, ...extra] = lines[i];
-      if (extra.length || !p1 || !p2) return;
-      if (factsOf.get(order[i])?.pr?.head !== p2) return;
+      if (extra.length || !p1 || !p2 || heads.has(order[i])) return;
+      heads.set(order[i], p2);
     }
+    return { base: lines.at(-1)![0], heads };
+  }
+
+  // The base SHA when the train is current: origin/main equals its base, each
+  // member's PR head still equals its landed head, and every member is still a
+  // candidate on this tick.
+  async trainBase(train: TrainRef, factsOf: Map<number, Facts>, main: string): Promise<string | undefined> {
+    const chain = await this.trainChain(train);
+    if (!chain || chain.base !== main) return;
+    if (!train.members.every(n => factsOf.get(n)?.pr?.head === chain.heads.get(n))) return;
     if (!train.members.every(n => { const f = factsOf.get(n); return f !== undefined && trainCandidate(f); })) return;
-    return base;
+    return chain.base;
   }
 
   async isAncestor(a: string, b: string): Promise<boolean> {
@@ -401,19 +419,26 @@ export class Runner {
       if (t.dryRun) { this.print(`train ${train.name} would close #${n} (dry-run)`); continue; }
       await this.writeGitHub(`repos/chetwerikoff/orch/issues/${n}`, 'PATCH', { state: 'closed' });
     }
+    const members = train.members.map(n => {
+      const f = t.collected.find(c => c.f.number === n)?.f;
+      const tree = t.localTrees.find(w => w.branch === `orch/${n}`);
+      return `Issue #${n}: PR #${f?.pr?.number} head ${f?.pr?.head}${tree ? ` worktree ${tree.path}` : ' (no local worktree)'}`;
+    }).join('\n');
+    const promptID = messageID(0, 'train', train.sha.slice(0, 7));
+    const promptText = `The runner landed merge train ${train.name} on chetwerikoff/orch by fast-forwarding main to MERGE_SHA=${train.sha}. Nothing is left to merge.\nMembers:\n${members}\nAdopt main at MERGE_SHA in this operator checkout (fetch and fast-forward, then local adoption steps), and clean up every member worktree and branch by merge-with-local-adoption. Report GitHub state, local adoption, and each worktree cleanup separately and truthfully. Do not merge anything.`;
     if (!session) {
       if (t.dryRun) return this.print(`train ${train.name} would start adoption session ${sessionID} (dry-run)`);
       await this.run(this.orca(), ['--version'], this.cwd);
       await this.api('session.create', {}, { id: sessionID, location: { directory: t.operator }, model: defaultMergeModel });
-      const members = train.members.map(n => {
-        const f = t.collected.find(c => c.f.number === n)?.f;
-        const tree = t.localTrees.find(w => w.branch === `orch/${n}`);
-        return `Issue #${n}: PR #${f?.pr?.number} head ${f?.pr?.head}${tree ? ` worktree ${tree.path}` : ' (no local worktree)'}`;
-      }).join('\n');
-      await this.prompt(sessionID, messageID(0, 'train', train.sha.slice(0, 7)),
-        `The runner landed merge train ${train.name} on chetwerikoff/orch by fast-forwarding main to MERGE_SHA=${train.sha}. Nothing is left to merge.\nMembers:\n${members}\nAdopt main at MERGE_SHA in this operator checkout (fetch and fast-forward, then local adoption steps), and clean up every member worktree and branch by merge-with-local-adoption. Report GitHub state, local adoption, and each worktree cleanup separately and truthfully. Do not merge anything.`,
-        [{ id: 'merge-with-local-adoption' }]);
+      await this.prompt(sessionID, promptID, promptText, [{ id: 'merge-with-local-adoption' }]);
       return this.terminal(t.operator, sessionID);
+    }
+    // A session that exists but was never prompted (a crash between create and
+    // prompt) resumes here instead of being treated as finished adoption.
+    if (!session.active && !await this.hasMessage(sessionID, promptID)) {
+      if (t.dryRun) return this.print(`train ${train.name} would re-prompt adoption session ${sessionID} (dry-run)`);
+      await this.prompt(sessionID, promptID, promptText, [{ id: 'merge-with-local-adoption' }]);
+      return;
     }
     if (session.active) return;
     // Only members still listed with orch:active need a merged read; the rest finished.
@@ -447,15 +472,21 @@ export class Runner {
     const merged: IssuePlan[] = [];
     const dir = await mkdtemp(join(tmpdir(), 'orch-train-'));
     let added = false;
+    let current = t.refs.main!;
     try {
       await this.git(['worktree', 'add', '--detach', dir, t.refs.main!]);
       added = true;
       for (const c of verified) {
-        try { await this.git(['merge', '--no-ff', '--no-edit', c.f.pr!.head], dir); merged.push(c); }
-        catch { await this.git(['merge', '--abort'], dir); this.print(`train: #${c.f.number} dropped after a textual conflict`); }
+        try { await this.git(['merge', '--no-ff', '--no-edit', c.f.pr!.head], dir); }
+        catch { await this.git(['merge', '--abort'], dir); this.print(`train: #${c.f.number} dropped after a textual conflict`); continue; }
+        // "Already up to date" exits 0 without a commit; that member has no merge here.
+        const merged2 = await this.git(['rev-parse', 'HEAD'], dir);
+        if (merged2 === current) { this.print(`train: #${c.f.number} dropped; its head is already contained in main`); continue; }
+        current = merged2;
+        merged.push(c);
       }
       if (merged.length < 2) return this.print('train not built: fewer than two members merge cleanly');
-      const tip = await this.git(['rev-parse', 'HEAD'], dir);
+      const tip = current;
       const branch = trainBranchName(t.refs.main!, merged.map(c => c.f.number));
       await this.git(['push', 'origin', `${tip}:refs/heads/${branch}`]);
       for (const c of merged) suppressed.add(c.f.number);

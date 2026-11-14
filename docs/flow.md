@@ -162,7 +162,10 @@ dry-run output, REST cost): [runner.md](runner.md#merge-trains).
   and is completed idempotently: close member Issues, start the adoption
   session, delete the branch last, after the session stops and every member
   still listed with `orch:active` reads `merged_at`. A member whose facts failed
-  on the tick leaves its train unclassified: no landing, no deletion.
+  on the tick leaves its train unclassified: no landing, no deletion. A landed
+  train still suppresses `merge` for a member only while its PR head is the head
+  the train landed; a drifted head resumes the per-PR path so `merged_at` can
+  appear.
 - **CI and landing.** CI runs on the train branch push. When every check on the
   train SHA succeeds, the runner fast-forwards `main` to the train (a plain
   push, never forced). A failed check — or no green CI 30 minutes after the

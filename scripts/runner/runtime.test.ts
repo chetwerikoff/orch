@@ -125,6 +125,15 @@ function fixture(count = 1) {
         const head = resolve(args.at(-1)!);
         if (conflicts.has(head)) throw new Error('fake git: merge conflict');
         const parent = resolve('HEAD');
+        const contained = new Set<string>();
+        const stack = [parent];
+        while (stack.length) {
+          const current = stack.pop()!;
+          if (contained.has(current)) continue;
+          contained.add(current);
+          stack.push(...(commits.get(current)?.parents ?? []));
+        }
+        if (contained.has(head)) return 'Already up to date.'; // exits 0 without a commit
         const merge = shaFor(`merge-${parent}-${head}`);
         commits.set(merge, { parents: [parent, head], time: epoch });
         heads.set(cwd ?? '', merge);
@@ -924,6 +933,7 @@ test('train: landed is not stale after main moved past the base; cleanup closes,
   for (const n of [1, 2]) { clean.prs.get(n)!.merged_at = '2026-11-14T00:00:00Z'; clean.prs.get(n)!.state = 'closed'; clean.issues.get(n)!.labels = []; }
   const sid2 = `ses_orch_train_${t2.tip.slice(0, 7)}`;
   clean.sessions.push({ id: sid2, location: { directory: main }, time: { created: epoch } });
+  clean.messages.set(sid2, new Set([`msg_orch_0_train_${t2.tip.slice(0, 7)}`])); // the prompt was sent and consumed
   clean.trees.splice(1, 2); // adoption cleaned both member worktrees
   await clean.runner.tick(false, epoch);
   assert.ok(!clean.remoteRefs.has(`refs/heads/${t2.name}`));
@@ -1039,8 +1049,7 @@ test('train: non-scheduled tick suppresses members of any listed train branch', 
   assert.equal(f.inboxes.get('ses_orchestrator'), undefined);
   void train;
 });
-test('train: dry-run prints proposals only; unverified without local objects', async () => {
-  const build = fixture(2);
+test('train: dry-run prints proposals only; unverified without local objects', async () => {  const build = fixture(2);
   readyPR(build, 1); readyPR(build, 2);
   await build.runner.tick(true, epoch);
   assert.match(build.output.join('\n'), /train orch\/train\/bbbbbbb\/1-2 would build: #1 #2 \(dry-run\)/);
@@ -1071,4 +1080,93 @@ test('train: dry-run prints proposals only; unverified without local objects', a
   assert.match(landed.output.join('\n'), new RegExp(`would start adoption session ses_orch_train_${t4.tip.slice(0, 7)} \\\(dry-run\\\)`));
   noTrainEffects(landed);
   assert.equal(landed.issues.get(1).state, 'open');
+});
+test('review r1: a failed train evaluation suppresses every listed train member (opus F1)', async () => {
+  const f = fixture(2);
+  readyPR(f, 1); readyPR(f, 2);
+  const train = makeTrain(f, [1, 2]);
+  f.checkRuns.set(train.tip, []);
+  const run = f.runner.run;
+  f.runner.run = async (file, args, cwd, input) => {
+    if (file === 'git' && args[0] === 'fetch') throw new Error('network blip');
+    return run(file, args, cwd, input);
+  };
+  assert.equal(await f.runner.tick(false, epoch), false);
+  assert.match(f.output.join('\n'), /#0 error: network blip/);
+  assert.match(f.output.join('\n'), /#1 READY \{"kind":"none"\}/);
+  assert.match(f.output.join('\n'), /#2 READY \{"kind":"none"\}/);
+  assert.ok(!f.sessions.some(s => s.id.includes('_merge_'))); // no per-PR merge agents
+  assert.deepEqual(f.pushes, []);                              // no deletion, no landing
+  assert.ok(f.remoteRefs.has(`refs/heads/${train.name}`));
+  const behind = fixture(2);
+  readyPR(behind, 1); readyPR(behind, 2);
+  const t2 = makeTrain(behind, [1, 2]);
+  behind.checkRuns.set(t2.tip, []);
+  behind.prs.get(1)!.mergeable_state = 'behind';
+  const base2 = behind.runner.run;
+  behind.runner.run = async (file, args, cwd, input) => {
+    if (file === 'git' && args[0] === 'fetch' && args.some(a => a.includes('orch/train/*'))) throw new Error('network blip');
+    return base2(file, args, cwd, input);
+  };
+  assert.equal(await behind.runner.tick(false, epoch), false);
+  assert.match(behind.output.join('\n'), /#1 FIXING \{"kind":"none"\}/); // no base update prompt
+  assert.equal(behind.inboxes.get('ses_orch_1'), undefined);
+});
+test('review r1: a landed member whose head drifted resumes the per-PR path (gpt F1)', async () => {
+  const f = fixture(2);
+  readyPR(f, 1); readyPR(f, 2);
+  const train = makeTrain(f, [1, 2]);
+  f.remoteRefs.set('refs/heads/main', train.tip);
+  // The worker for #1 pushed a new head after the facts read, before the landing.
+  const drifted = readyPR(f, 1, shaFor('head-1-drift'));
+  await f.runner.tick(false, epoch);
+  assert.match(f.output.join('\n'), new RegExp(`train ${train.name} landed`));
+  assert.match(f.output.join('\n'), /#1 READY \{"kind":"merge"\}/);  // drifted: per-PR path
+  assert.match(f.output.join('\n'), /#2 READY \{"kind":"none"\}/);   // landed head: suppressed
+  assert.ok(f.sessions.some(s => s.id === `ses_orch_1_merge_${drifted.slice(0, 7)}`));
+  assert.ok(f.remoteRefs.has(`refs/heads/${train.name}`)); // merged_at gate still holds
+  // Once the drifted member merges per-PR, the gate passes and the branch goes.
+  f.prs.get(1)!.merged_at = '2026-11-14T00:05:00Z';
+  f.prs.get(2)!.merged_at = '2026-11-14T00:05:00Z';
+  f.trees.splice(1, 2); // adoption cleaned both member worktrees
+  await f.runner.tick(false, epoch + 5 * 60_000);
+  assert.ok(!f.remoteRefs.has(`refs/heads/${train.name}`));
+});
+test('review r1: an adoption session created but never prompted resumes instead of deleting (gpt F2)', async () => {
+  const f = fixture(2);
+  readyPR(f, 1); readyPR(f, 2);
+  const train = makeTrain(f, [1, 2]);
+  f.remoteRefs.set('refs/heads/main', train.tip);
+  for (const n of [1, 2]) { f.prs.get(n)!.merged_at = '2026-11-14T00:00:00Z'; f.prs.get(n)!.state = 'closed'; f.issues.get(n)!.state = 'closed'; }
+  const sessionID = `ses_orch_train_${train.tip.slice(0, 7)}`;
+  // Crash between session.create and the prompt: the session exists, was never prompted.
+  f.sessions.push({ id: sessionID, location: { directory: main }, time: { created: epoch } });
+  f.trees.splice(1, 2);
+  await f.runner.tick(false, epoch);
+  const queued = f.inboxes.get(sessionID)!.at(-1)!;
+  assert.equal(queued.id, `msg_orch_0_train_${train.tip.slice(0, 7)}`);
+  assert.deepEqual(queued.skills, [{ id: 'merge-with-local-adoption' }]);
+  assert.ok(f.remoteRefs.has(`refs/heads/${train.name}`)); // no deletion, no adoption notice
+  assert.ok(!f.calls.some(c => c.file === 'git' && c.args[0] === 'push' && c.args.includes('--delete')));
+  // Prompt consumed and session finished: the next tick deletes the branch.
+  await f.runner.tick(false, epoch + 5 * 60_000);
+  assert.ok(!f.remoteRefs.has(`refs/heads/${train.name}`));
+});
+test('review r1: a member already contained in main is dropped, not merged as a no-op (gpt F3)', async () => {
+  const f = fixture(3);
+  const h1 = readyPR(f, 1);
+  readyPR(f, 2, base); // an "empty" PR whose head is main itself
+  const h3 = readyPR(f, 3);
+  await f.runner.tick(false, epoch);
+  assert.match(f.output.join('\n'), /train: #2 dropped; its head is already contained in main/);
+  const tip = shaFor(`merge-${shaFor(`merge-${base}-${h1}`)}-${h3}`);
+  assert.equal(f.remoteRefs.get('refs/heads/orch/train/bbbbbbb/1-3'), tip);
+  const two = fixture(2);
+  readyPR(two, 1);
+  readyPR(two, 2, base);
+  await two.runner.tick(false, epoch);
+  assert.match(two.output.join('\n'), /train: #2 dropped; its head is already contained in main/);
+  assert.match(two.output.join('\n'), /train not built: fewer than two members merge cleanly/);
+  assert.ok(![...two.remoteRefs.keys()].some(k => k.startsWith('refs/heads/orch/train/')));
+  assert.deepEqual(two.pushes, []);
 });
