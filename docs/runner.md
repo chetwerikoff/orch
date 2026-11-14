@@ -236,6 +236,30 @@ systemctl --user daemon-reload
 systemctl --user enable --now orch-runner.timer
 ```
 
+Every minute reads local git and worker-backend facts for all local worker branches.
+On minutes divisible by five it lists labelled Issues and refreshes their GitHub
+facts.
+Other minutes refresh only workers that became idle less than two minutes ago,
+or have an unnoticed pending request (V2 form/permission or Claude `orch-ask`).
+Notice IDs are checked in both the orchestrator's messages and inbox.
+The latest worker suffix wins; old worker sessions are not supervised or restarted.
+
+Before processing refreshed Issues on scheduled ticks, the runner counts open
+Issues from the existing `orch:active` list. Only below the slot limit of 2
+([orchestrator duty 1](../prompts/orchestrator.md#duties)) does it list open
+`orch:ready` Issues. Ready candidates exclude `orch:active` and `orch:escalated`.
+A merged Issue is closed by its PR, freeing its slot on that same tick. An
+escalation frees its slot when `orch:active` is removed; the next scheduled read
+notices the queue. An individual Issue failure cannot block queue notification.
+The ordinary first-page cost adds one REST call below the slot limit, none
+otherwise; there is no queue read on non-scheduled ticks.
+
+For three Issues with a PR, the ordinary first-page read cost is 16 per scheduled
+tick (one Issue list, then PR discovery/detail, comments, checks, and statuses
+per Issue), or 96 in 30 minutes. Pagination and new idle/question reasons add
+calls. Measure a live dry-run series using the printed counts; `gh api rate_limit`
+before/after also works when other consumers are not using the shared token.
+
 ## Merge trains
 
 The runner implements [the merge-train flow](flow.md#merge-train). There is no
@@ -280,30 +304,6 @@ train state file: branch names are the state.
   credential; a missing scope is a runner error, not a fallback.
 - **REST cost.** Per scheduled tick: one check-runs read per current train,
   plus one close per open landed member; no statuses read for trains.
-
-Every minute reads local git and worker-backend facts for all local worker branches.
-On minutes divisible by five it lists labelled Issues and refreshes their GitHub
-facts.
-Other minutes refresh only workers that became idle less than two minutes ago,
-or have an unnoticed pending request (V2 form/permission or Claude `orch-ask`).
-Notice IDs are checked in both the orchestrator's messages and inbox.
-The latest worker suffix wins; old worker sessions are not supervised or restarted.
-
-Before processing refreshed Issues on scheduled ticks, the runner counts open
-Issues from the existing `orch:active` list. Only below the slot limit of 2
-([orchestrator duty 1](../prompts/orchestrator.md#duties)) does it list open
-`orch:ready` Issues. Ready candidates exclude `orch:active` and `orch:escalated`.
-A merged Issue is closed by its PR, freeing its slot on that same tick. An
-escalation frees its slot when `orch:active` is removed; the next scheduled read
-notices the queue. An individual Issue failure cannot block queue notification.
-The ordinary first-page cost adds one REST call below the slot limit, none
-otherwise; there is no queue read on non-scheduled ticks.
-
-For three Issues with a PR, the ordinary first-page read cost is 16 per scheduled
-tick (one Issue list, then PR discovery/detail, comments, checks, and statuses
-per Issue), or 96 in 30 minutes. Pagination and new idle/question reasons add
-calls. Measure a live dry-run series using the printed counts; `gh api rate_limit`
-before/after also works when other consumers are not using the shared token.
 
 ## Outputs and recovery
 
