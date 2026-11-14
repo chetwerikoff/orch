@@ -124,7 +124,8 @@ current-head CI → review → smoke, round caps, and relaunch behavior. Worker
 completion is the PR leaving draft; a report cannot substitute for it.
 
 Workers do not merge on implementation completion. Merge requires a direct user
-instruction or the fresh merge agent started by the runner on READY. Bind the
+instruction, the fresh merge agent started by the runner on READY, or the
+runner's merge-train landing ([flow](docs/flow.md)). Bind the
 action to the exact PR/head and reread current readiness before merging; unexpected
 drift returns to the runner's flow. Authorization never makes failed checks pass.
 Report GitHub merge, operator-checkout adoption, local activation, and exact

@@ -170,8 +170,13 @@ and report it in the PR; do not add a store.
 
 `tick --dry-run` collects facts and prints each refreshed Issue's stage, its one
 proposed action, the queue/escalation notices it would send, and the total GitHub
-REST calls. No reviewer runs, so no `review-outage` can appear. It does not launch
-agents, send prompts, post comments/statuses, edit labels, fetch refs, or change a checkout.
+REST calls. Train lines print the branch facts, the classification, the proposed
+train name and members, and the landing or cleanup action it would take; a train
+whose needed objects are not local prints `unverified` and proposes nothing for
+it. No reviewer runs, so no `review-outage` can appear. It does not launch
+agents, send prompts, post comments/statuses, edit labels or Issues, fetch refs,
+or change a checkout; it may run `git ls-remote` and read objects that are
+already local.
 Errors remain failures. A non-refresh minute prints that no refresh is due; it
 does not invent a cached stage.
 
@@ -231,7 +236,52 @@ systemctl --user daemon-reload
 systemctl --user enable --now orch-runner.timer
 ```
 
-Every tick reads local git and worker-backend facts for all local worker branches.
+## Merge trains
+
+The runner implements [the merge-train flow](flow.md#merge-train). There is no
+train state file: branch names are the state.
+
+- **Train facts.** Every tick that refreshes any Issue first runs one
+  `git ls-remote origin refs/heads/main 'refs/heads/orch/train/*'` (no REST
+  call); the output, not remote-tracking refs, is the list of trains. Before
+  classification a scheduled tick that lists any train branch runs one
+  `git fetch origin main '+refs/heads/orch/train/*:refs/remotes/origin/orch/train/*'`.
+  A glob refspec needs a destination; one that matches nothing still succeeds.
+- **Classification** (scheduled ticks, in order): **landed** (train SHA equals
+  `origin/main` or is an ancestor), **current** (then red when its CI is),
+  otherwise **stale** — deleted. A member's facts failure leaves the train
+  unclassified this tick: no landing, no deletion, members stay suppressed.
+- **Suppression.** On scheduled ticks members of a current non-red or landed
+  train get no `merge`/`base` action; on other ticks members of any listed
+  train branch do not either.
+- **Branch.** `orch/train/<main sha7>/<n1>-<n2>-…`, members in ascending Issue
+  order. Build fetches `origin main refs/heads/orch/<N>` per candidate, checks
+  each fetched head against the REST PR head (mismatch drops the member), then
+  merges each member with `git merge --no-ff --no-edit` in a temporary detached
+  worktree at `origin/main`; a textual conflict aborts and drops that member.
+  Fewer than two remaining members means no train. The temporary worktree is
+  always removed.
+- **CI.** `.github/workflows/ci.yml` runs on `push` to `orch/train/**`; there
+  is no carrier PR. Green means every check run on the exact train SHA
+  succeeds; no statuses are read for trains. No green CI 30 minutes after the
+  train commit counts as red.
+- **Landing.** `git push origin <train sha>:refs/heads/main`, a plain
+  fast-forward, never forced. After any push failure the runner re-reads
+  `origin/main` with `git ls-remote` (never push stderr): a main at or past the
+  train means landed; a main different from the base deletes the train (the
+  next scheduled tick rebuilds); anything else is a runner error and the train
+  stays. Landed trains complete idempotently: close open member Issues, start
+  `ses_orch_train_<sha7>` (merge model) with the `merge-with-local-adoption`
+  skill and an Orca terminal, and delete the branch only after that session
+  stops and every member still listed with `orch:active` reads `merged_at`.
+- **Push credential.** The landing push uses the credential helper configured
+  for the operator checkout (`gh auth git-credential`). A train with a member
+  that changes `.github/workflows/` needs the `workflow` scope on that
+  credential; a missing scope is a runner error, not a fallback.
+- **REST cost.** Per scheduled tick: one check-runs read per current train,
+  plus one close per open landed member; no statuses read for trains.
+
+Every minute reads local git and worker-backend facts for all local worker branches.
 On minutes divisible by five it lists labelled Issues and refreshes their GitHub
 facts.
 Other minutes refresh only workers that became idle less than two minutes ago,
@@ -294,6 +344,16 @@ separate dedup store is used. Existing worker notices are `asks` (request ID),
   scheduling. There is no second reminder: the orchestrator inspects the cause
   and escalates when it will not clear by itself. Runner errors remain failures,
   not notices.
+- `train-red`: Issue number **0**; key = train SHA7; facts = the failing checks
+  or the no-green-CI line. Queued once per red train; members take the per-PR
+  path. No bisection, no retry.
+- `train-adoption`: Issue number **0**; key = train SHA7; facts = member
+  worktrees left after the adoption session stopped. Queued once before the
+  train branch is deleted.
+- `asks` from a train adoption session (`ses_orch_train_<sha7>`): Issue number
+  **0**, one per unseen pending request, read on each scheduled tick while the
+  session exists; without it a session blocked on a permission request would
+  keep the branch undeleted and unnoticed forever.
 
 Protocol comments are accepted only when GitHub reports the author association
 as `OWNER`, `MEMBER`, or `COLLABORATOR`; missing or other associations are ignored.
