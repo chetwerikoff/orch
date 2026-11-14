@@ -325,7 +325,7 @@ export class Runner {
           this.print(`train ${train.name} current; CI pending`);
           continue;
         }
-        this.print(`train ${train.name} green; would land on main${t.dryRun ? ' (dry-run)' : ''}`);
+        this.print(`train ${train.name} green; ${t.dryRun ? 'would land on main (dry-run)' : 'landing on main'}`);
         // A main move during landing deletes the train; the next scheduled tick rebuilds.
         if (!t.dryRun && await this.landTrain(train, base, t)) blocked = true;
       } catch (error) {

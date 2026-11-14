@@ -809,6 +809,7 @@ test('train: green current train lands with exact push argv, closes Issues, star
   const train = makeTrain(f, [1, 2]);
   f.checkRuns.set(train.tip, green());
   assert.equal(await f.runner.tick(false, epoch), true);
+  assert.match(f.output.join('\n'), new RegExp(`train ${train.name} green; landing on main`));
   assert.deepEqual(f.pushes[0].args, ['push', 'origin', `${train.tip}:refs/heads/main`]);
   assert.equal(f.remoteRefs.get('refs/heads/main'), train.tip);
   assert.equal(f.issues.get(1).state, 'closed');
