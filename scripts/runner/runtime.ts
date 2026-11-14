@@ -306,6 +306,7 @@ export class Runner {
           this.print(`train ${train.name} red: ${facts}`);
           const n = notice(0, 'train-red', train.sha.slice(0, 7), `${train.name}: ${facts}`);
           if (!t.dryRun) await this.prompt(this.env.ORCH_ORCHESTRATOR_SESSION, n.id, n.text);
+          else if (!await this.hasMessage(this.env.ORCH_ORCHESTRATOR_SESSION, n.id)) this.print(JSON.stringify(n) + ' (dry-run)');
           continue;
         }
         for (const n of train.members) suppressed.add(n);
@@ -314,7 +315,8 @@ export class Runner {
           continue;
         }
         this.print(`train ${train.name} green; would land on main${t.dryRun ? ' (dry-run)' : ''}`);
-        if (!t.dryRun) await this.landTrain(train, base, t);
+        // A main move during landing deletes the train; the next scheduled tick rebuilds.
+        if (!t.dryRun && await this.landTrain(train, base, t)) blocked = true;
       } catch (error) {
         for (const n of train.members) suppressed.add(n);
         throw error;
@@ -363,7 +365,8 @@ export class Runner {
     this.print(`train ${name} branch deleted (${reason})`);
   }
 
-  async landTrain(train: TrainRef, base: string, t: TrainTick) {
+  // Returns true when main moved and the train was deleted: no build this tick.
+  async landTrain(train: TrainRef, base: string, t: TrainTick): Promise<boolean> {
     try {
       await this.git(['push', 'origin', `${train.sha}:refs/heads/main`]);
     } catch (pushError) {
@@ -374,11 +377,13 @@ export class Runner {
         this.print(`train ${train.name} push reported an error but main is at the train; landed`);
       } else if (reread !== base) {
         this.print(`train ${train.name} landing failed: main moved; deleting`);
-        return this.deleteTrain(train.name, 'main moved');
+        await this.deleteTrain(train.name, 'main moved');
+        return true;
       } else throw pushError;
     }
     this.print(`train ${train.name} landed on main at ${train.sha.slice(0, 7)}`);
-    return this.landedTrain(train, t);
+    await this.landedTrain(train, t);
+    return false;
   }
 
   // Idempotent landed-train steps in order: close member Issues, start the adoption

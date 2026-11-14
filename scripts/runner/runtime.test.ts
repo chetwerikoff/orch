@@ -849,6 +849,7 @@ test('train: push failure readback - landed, descendant, main moved, or runner e
   assert.ok(!moved.remoteRefs.has(`refs/heads/${t3.name}`));
   assert.match(moved.output.join('\n'), /landing failed: main moved; deleting/);
   assert.deepEqual(moved.pushes.at(-1)!.args, ['push', 'origin', '--delete', `refs/heads/${t3.name}`]);
+  assert.equal(moved.pushes.length, 2); // no same-tick rebuild on the stale base
   const stuck = fixture(2);
   readyPR(stuck, 1); readyPR(stuck, 2);
   const t4 = makeTrain(stuck, [1, 2]);
