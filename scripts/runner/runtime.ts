@@ -2,9 +2,11 @@ import { execFile } from 'node:child_process';
 import { readFile, mkdtemp, writeFile, unlink, rmdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { decide, noticeCandidates, shouldReadGitHub, messageID, notice, queueNotice } from './decide.ts';
+import { decide, noticeCandidates, shouldReadGitHub, messageID, notice, queueNotice, trainCandidate } from './decide.ts';
 import type { Facts, Session, Action, Decision } from './decide.ts';
 import { parseComments, ciFacts, tierOf, smokeNotApplicable, reviewerResult } from './github.ts';
+import { parseTrains, trainBranchName, trainIsRed } from './train.ts';
+import type { TrainRef, TrainRefs } from './train.ts';
 import { defaultMergeModel, defaultWorkerModel } from './start.ts';
 import type { WorkerModel } from './start.ts';
 import { V2Backend, ClaudeBackend, readTranscript } from './backends.ts';
@@ -21,6 +23,11 @@ export const runCommand: Run = (file, args, cwd, input) => new Promise((resolve,
   child.stdin?.end(input);
 });
 type Worktree = { path: string; branch?: string; head: string };
+type IssuePlan = { f: Facts; d: Decision; issue: any; tree?: Worktree; context?: unknown };
+type TrainTick = {
+  dryRun: boolean; now: number; refs: TrainRefs; issues: any[]; localTrees: Worktree[];
+  collected: IssuePlan[]; failedIssues: Set<number>; operator: string; operatorSessions: any[];
+};
 export function parseWorktrees(text: string): Worktree[] {
   return text.trim().split('\n\n').filter(Boolean).map(block => {
     const value = (key: string) => block.split('\n').find(l => l.startsWith(`${key} `))?.slice(key.length + 1);
@@ -187,6 +194,11 @@ export class Runner {
     }
     const scheduled = Math.floor(now / 60_000) % 5 === 0;
     const issues = scheduled ? (await this.pages('repos/chetwerikoff/orch/issues?state=all&labels=orch%3Aactive')).filter(i => !i.pull_request) : [];
+    const urgent = !scheduled ? [...locals.values()].filter(f => shouldReadGitHub(f)) : [];
+    // Train branch names are the only train state; read them before any Issue refresh.
+    const refs = scheduled || urgent.length
+      ? parseTrains(await this.run('git', ['ls-remote', 'origin', 'refs/heads/main', 'refs/heads/orch/train/*'], this.cwd))
+      : undefined;
     if (scheduled) {
       try {
         const activeCount = issues.filter(i => i.state === 'open').length;
@@ -202,31 +214,253 @@ export class Runner {
         }
       } catch (error) { failIssue(0, error); }
     }
-    if (!scheduled) for (const f of locals.values()) if (shouldReadGitHub(f)) {
+    if (!scheduled) for (const f of urgent) {
       try {
         const issue = await this.gh(`repos/chetwerikoff/orch/issues/${f.number}`);
         if (issue.labels.some((l: any) => l.name === 'orch:active')) issues.push(issue);
       } catch (error) { failIssue(f.number, error); }
     }
+    // Scheduled ticks collect every Issue's facts and decisions before acting.
+    const collected: IssuePlan[] = [];
     for (const issue of issues) {
       if (failedIssues.has(issue.number)) continue;
       try {
         const tree = localTrees.find(t => t.branch === `orch/${issue.number}`);
         const f = locals.get(issue.number) ?? await this.localFacts(issue.number, tree, now, active, operatorSessions);
         const context = await this.githubFacts(f, issue, operatorSessions);
-        const decision = decide(f);
-        this.print(`#${f.number} ${decision.stage} ${JSON.stringify(decision.action)}${dryRun ? ' (dry-run)' : ''}`);
-        if (dryRun && decision.action.kind === 'escalate') {
-          const n = notice(f.number, 'escalated', f.pr!.head, `${decision.stage}: ${decision.action.reason}`);
+        collected.push({ f, d: decide(f), issue, tree, context });
+      } catch (error) { failIssue(issue.number, error); }
+    }
+    const suppressed = new Set<number>();
+    if (refs) {
+      if (!scheduled) for (const train of refs.trains) for (const n of train.members) suppressed.add(n);
+      else {
+        const tickContext: TrainTick = { dryRun, now, refs, issues, localTrees, collected, failedIssues, operator: operator.path, operatorSessions };
+        try { await this.evaluateTrains(tickContext, suppressed); }
+        catch (error) { failIssue(0, error); }
+      }
+    }
+    for (const { f, d: plan, issue, tree, context } of collected) {
+      try {
+        // Train members get neither merge nor base while their train holds them.
+        const base = plan.action.kind === 'prompt' && plan.action.id.startsWith(`msg_orch_${f.number}_base_`);
+        const suppressedAction = suppressed.has(f.number) && (plan.action.kind === 'merge' || base);
+        const d: Decision = suppressedAction ? { stage: plan.stage, action: { kind: 'none' } } : plan;
+        this.print(`#${f.number} ${d.stage} ${JSON.stringify(d.action)}${dryRun ? ' (dry-run)' : ''}`);
+        if (dryRun && d.action.kind === 'escalate') {
+          const n = notice(f.number, 'escalated', f.pr!.head, `${d.stage}: ${d.action.reason}`);
           if (!await this.hasMessage(this.env.ORCH_ORCHESTRATOR_SESSION, n.id)) this.print(JSON.stringify(n) + ' (dry-run)');
         }
-        if (!dryRun) await this.execute(f, decision, issue, tree, operator.path, context);
-      } catch (error) { failIssue(issue.number, error); }
+        if (!dryRun) await this.execute(f, d, issue, tree, operator.path, context);
+      } catch (error) { failIssue(f.number, error); }
     }
     if (!issues.length && !failedIssues.size) this.print('No GitHub refresh due or no active Issues.');
     this.print(`GitHub REST calls: ${this.calls}`);
     return failedIssues.size === 0;
   }
+  // Classify, land, clean, and build trains on a scheduled tick. Members of a current
+  // non-red train or a landed train get no merge/base action this tick.
+  async evaluateTrains(t: TrainTick, suppressed: Set<number>) {
+    if (!t.refs.main) throw new Error('git ls-remote listed no refs/heads/main; inspect the remote before handling trains.');
+    if (!t.dryRun && t.refs.trains.length) await this.git(['fetch', 'origin', 'main', '+refs/heads/orch/train/*:refs/remotes/origin/orch/train/*']);
+    const factsOf = new Map(t.collected.map(c => [c.f.number, c.f]));
+    let open = false;    // a current train exists (red or not)
+    let blocked = false; // a train could not be classified this tick
+    for (const train of [...t.refs.trains].sort((a, b) => a.name.localeCompare(b.name))) {
+      try {
+        if (train.members.some(n => t.failedIssues.has(n))) {
+          // A member's facts failed: no landing, no deletion, members stay suppressed.
+          for (const n of train.members) suppressed.add(n);
+          blocked = true;
+          this.print(`train ${train.name} unclassified: member facts failed this tick`);
+          continue;
+        }
+        let landed: boolean, base: string | undefined;
+        try {
+          landed = train.sha === t.refs.main || await this.isAncestor(train.sha, t.refs.main);
+          base = landed ? undefined : await this.trainBase(train, factsOf, t.refs.main);
+        } catch (error) {
+          if (!t.dryRun) throw error;
+          for (const n of train.members) suppressed.add(n);
+          blocked = true;
+          this.print(`train ${train.name} unverified: needed objects are not local (dry-run)`);
+          continue;
+        }
+        if (landed) {
+          for (const n of train.members) suppressed.add(n);
+          this.print(`train ${train.name} landed`);
+          await this.landedTrain(train, t);
+          continue;
+        }
+        if (!base) {
+          this.print(`train ${train.name} stale; would delete${t.dryRun ? ' (dry-run)' : ''}`);
+          if (!t.dryRun) await this.deleteTrain(train.name, 'stale');
+          continue;
+        }
+        open = true;
+        const ci = await this.trainCI(train.sha);
+        const commitTime = await this.trainCommitTime(train.sha);
+        if (trainIsRed(ci.ci, commitTime, t.now)) {
+          const facts = ci.ci === 'failure' ? (ci.ciFailures ?? []).join('; ') || 'failed checks'
+            : `no green CI ${Math.round((t.now - commitTime) / 60_000)} minutes after the train commit`;
+          this.print(`train ${train.name} red: ${facts}`);
+          const n = notice(0, 'train-red', train.sha.slice(0, 7), `${train.name}: ${facts}`);
+          if (!t.dryRun) await this.prompt(this.env.ORCH_ORCHESTRATOR_SESSION, n.id, n.text);
+          continue;
+        }
+        for (const n of train.members) suppressed.add(n);
+        if (ci.ci !== 'success') {
+          this.print(`train ${train.name} current; CI pending`);
+          continue;
+        }
+        this.print(`train ${train.name} green; would land on main${t.dryRun ? ' (dry-run)' : ''}`);
+        if (!t.dryRun) await this.landTrain(train, base, t);
+      } catch (error) {
+        for (const n of train.members) suppressed.add(n);
+        throw error;
+      }
+    }
+    if (blocked || open) return;
+    await this.buildTrain(t, suppressed);
+  }
+
+  // The base SHA when the train is current: origin/main equals its base, its
+  // first-parent chain is exactly one --no-ff merge per member back to the base,
+  // each merge's second parent equals that member's PR head, and every member is
+  // still a candidate on this tick.
+  async trainBase(train: TrainRef, factsOf: Map<number, Facts>, main: string): Promise<string | undefined> {
+    const lines = (await this.run('git', ['log', '--first-parent', `--max-count=${train.members.length + 1}`, '--format=%H %P', train.sha], this.cwd))
+      .trim().split('\n').filter(Boolean).map(line => line.split(' '));
+    if (lines.length !== train.members.length + 1) return;
+    const base = lines.at(-1)![0];
+    if (base !== main) return;
+    const order = [...train.members].reverse(); // the tip is the last member merged
+    for (let i = 0; i < order.length; i++) {
+      const [, p1, p2, ...extra] = lines[i];
+      if (extra.length || !p1 || !p2) return;
+      if (factsOf.get(order[i])?.pr?.head !== p2) return;
+    }
+    if (!train.members.every(n => { const f = factsOf.get(n); return f !== undefined && trainCandidate(f); })) return;
+    return base;
+  }
+
+  async isAncestor(a: string, b: string): Promise<boolean> {
+    try { await this.run('git', ['merge-base', '--is-ancestor', a, b], this.cwd); return true; }
+    catch (error: any) { if (error.code === 1) return false; throw error; }
+  }
+
+  async trainCI(sha: string): Promise<Pick<Facts, 'ci' | 'ciFailures'>> {
+    const checks = await this.pages(`repos/chetwerikoff/orch/commits/${sha}/check-runs`, 'check_runs');
+    return ciFacts(checks, []);
+  }
+
+  async trainCommitTime(sha: string): Promise<number> {
+    return Number(await this.git(['show', '-s', '--format=%ct', sha])) * 1000;
+  }
+
+  async deleteTrain(name: string, reason: string) {
+    await this.git(['push', 'origin', '--delete', `refs/heads/${name}`]);
+    this.print(`train ${name} branch deleted (${reason})`);
+  }
+
+  async landTrain(train: TrainRef, base: string, t: TrainTick) {
+    try {
+      await this.git(['push', 'origin', `${train.sha}:refs/heads/main`]);
+    } catch (pushError) {
+      // Never parse push stderr; re-read the remote and decide from facts.
+      const reread = parseTrains(await this.run('git', ['ls-remote', 'origin', 'refs/heads/main'], this.cwd)).main;
+      await this.git(['fetch', 'origin', 'main']);
+      if (reread && (reread === train.sha || await this.isAncestor(train.sha, reread))) {
+        this.print(`train ${train.name} push reported an error but main is at the train; landed`);
+      } else if (reread !== base) {
+        this.print(`train ${train.name} landing failed: main moved; deleting`);
+        return this.deleteTrain(train.name, 'main moved');
+      } else throw pushError;
+    }
+    this.print(`train ${train.name} landed on main at ${train.sha.slice(0, 7)}`);
+    return this.landedTrain(train, t);
+  }
+
+  // Idempotent landed-train steps in order: close member Issues, start the adoption
+  // session, delete the branch last. A crash at any step resumes from the branch.
+  async landedTrain(train: TrainRef, t: TrainTick) {
+    const sessionID = `ses_orch_train_${train.sha.slice(0, 7)}`;
+    const session = t.operatorSessions.find(s => s.id === sessionID);
+    if (session) for (const request of await this.backend(sessionID).pendingRequests()) {
+      const n = notice(0, 'asks', request.id, `${sessionID}: ${request.text}`);
+      if (t.dryRun) { if (!await this.hasMessage(this.env.ORCH_ORCHESTRATOR_SESSION, n.id)) this.print(JSON.stringify(n) + ' (dry-run)'); }
+      else await this.prompt(this.env.ORCH_ORCHESTRATOR_SESSION, n.id, n.text);
+    }
+    for (const n of train.members) {
+      if (t.issues.find(i => i.number === n)?.state !== 'open') continue;
+      if (t.dryRun) { this.print(`train ${train.name} would close #${n} (dry-run)`); continue; }
+      await this.writeGitHub(`repos/chetwerikoff/orch/issues/${n}`, 'PATCH', { state: 'closed' });
+    }
+    if (!session) {
+      if (t.dryRun) return this.print(`train ${train.name} would start adoption session ${sessionID} (dry-run)`);
+      await this.run(this.orca(), ['--version'], this.cwd);
+      await this.api('session.create', {}, { id: sessionID, location: { directory: t.operator }, model: defaultMergeModel });
+      const members = train.members.map(n => {
+        const f = t.collected.find(c => c.f.number === n)?.f;
+        const tree = t.localTrees.find(w => w.branch === `orch/${n}`);
+        return `Issue #${n}: PR #${f?.pr?.number} head ${f?.pr?.head}${tree ? ` worktree ${tree.path}` : ' (no local worktree)'}`;
+      }).join('\n');
+      await this.prompt(sessionID, messageID(0, 'train', train.sha.slice(0, 7)),
+        `The runner landed merge train ${train.name} on chetwerikoff/orch by fast-forwarding main to MERGE_SHA=${train.sha}. Nothing is left to merge.\nMembers:\n${members}\nAdopt main at MERGE_SHA in this operator checkout (fetch and fast-forward, then local adoption steps), and clean up every member worktree and branch by merge-with-local-adoption. Report GitHub state, local adoption, and each worktree cleanup separately and truthfully. Do not merge anything.`,
+        [{ id: 'merge-with-local-adoption' }]);
+      return this.terminal(t.operator, sessionID);
+    }
+    if (session.active) return;
+    // Only members still listed with orch:active need a merged read; the rest finished.
+    const listed = train.members.filter(n => t.issues.some(i => i.number === n));
+    if (listed.some(n => !t.collected.find(c => c.f.number === n)?.f.pr?.merged)) return;
+    const left = train.members.filter(n => t.localTrees.some(w => w.branch === `orch/${n}`));
+    if (left.length) {
+      const n = notice(0, 'train-adoption', train.sha.slice(0, 7), `${train.name}: adoption session ${sessionID} stopped with worktrees left: ${left.map(x => `orch/${x}`).join(', ')}`);
+      if (t.dryRun) { if (!await this.hasMessage(this.env.ORCH_ORCHESTRATOR_SESSION, n.id)) this.print(JSON.stringify(n) + ' (dry-run)'); }
+      else await this.prompt(this.env.ORCH_ORCHESTRATOR_SESSION, n.id, n.text);
+    }
+    if (t.dryRun) return this.print(`train ${train.name} would delete branch (dry-run)`);
+    return this.deleteTrain(train.name, 'landed');
+  }
+
+  async buildTrain(t: TrainTick, suppressed: Set<number>) {
+    // Suppressed members already belong to a train (landing or current); never retrain them.
+    const candidates = t.collected
+      .filter(c => c.issue.state === 'open' && !suppressed.has(c.f.number) && trainCandidate(c.f))
+      .sort((a, b) => a.f.number - b.f.number);
+    if (candidates.length < 2) return;
+    const name = trainBranchName(t.refs.main!, candidates.map(c => c.f.number));
+    if (t.dryRun) return this.print(`train ${name} would build: ${candidates.map(c => `#${c.f.number}`).join(' ')} (dry-run)`);
+    const verified: IssuePlan[] = [];
+    for (const c of candidates) {
+      await this.git(['fetch', 'origin', 'main', `refs/heads/orch/${c.f.number}`]);
+      if (await this.git(['rev-parse', `refs/remotes/origin/orch/${c.f.number}`]) === c.f.pr!.head) verified.push(c);
+      else this.print(`train: #${c.f.number} dropped; fetched branch head differs from the PR head`);
+    }
+    if (verified.length < 2) return this.print(`train ${name} not built: fewer than two verified members`);
+    const merged: IssuePlan[] = [];
+    const dir = await mkdtemp(join(tmpdir(), 'orch-train-'));
+    let added = false;
+    try {
+      await this.git(['worktree', 'add', '--detach', dir, t.refs.main!]);
+      added = true;
+      for (const c of verified) {
+        try { await this.git(['merge', '--no-ff', '--no-edit', c.f.pr!.head], dir); merged.push(c); }
+        catch { await this.git(['merge', '--abort'], dir); this.print(`train: #${c.f.number} dropped after a textual conflict`); }
+      }
+      if (merged.length < 2) return this.print('train not built: fewer than two members merge cleanly');
+      const tip = await this.git(['rev-parse', 'HEAD'], dir);
+      const branch = trainBranchName(t.refs.main!, merged.map(c => c.f.number));
+      await this.git(['push', 'origin', `${tip}:refs/heads/${branch}`]);
+      for (const c of merged) suppressed.add(c.f.number);
+      this.print(`train ${branch} built at ${tip.slice(0, 7)}; CI runs on the push`);
+    } finally {
+      if (added) await this.git(['worktree', 'remove', '--force', dir]);
+      else await rmdir(dir).catch(() => {});
+    }
+  }
+
   async prompt(sessionID: string | undefined, id: string, text: string, skills?: { id: string }[]) {
     if (!sessionID) throw new Error('Missing destination session; set ORCH_ORCHESTRATOR_SESSION or relaunch the worker with start.');
     if (!skills) return this.backend(sessionID).prompt(id, text);
