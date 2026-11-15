@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { decide, shouldReadGitHub, messageID, queueNotice } from './decide.ts';
+import { decide, shouldReadGitHub, messageID, queueNotice, trainCandidate } from './decide.ts';
 import type { Facts } from './decide.ts';
 
 export function facts(patch: Partial<Facts> = {}): Facts {
@@ -192,4 +192,28 @@ test('idle workers receive unsent CI, findings and smoke work before stopped sup
     if (stopped.kind === 'notify') { assert.match(stopped.text, /stopped 100/); f.seen.push(stopped.id); }
     assert.equal(decide(f).action.kind, 'none');
   }
+});
+test('train candidate is the pre-notice merge decision with behind and conflict cleared', () => {
+  const pass = { head: 'abc', result: 'PASS' as const, text: 'ok' };
+  const ready = (): Facts => facts({ ...reviewed, smokes: [pass] });
+  assert.equal(trainCandidate(ready()), true);
+  for (const patch of [{ behind: true }, { conflict: true }]) assert.equal(trainCandidate({ ...ready(), pr: { ...ready().pr!, ...patch } }), true);
+  // A pending asks request excludes even once noticed; other notices never remove a candidate.
+  const ask = { id: 'form_1', session: 'ses_orch_4', text: 'question' };
+  assert.equal(trainCandidate(facts({ ...reviewed, smokes: [pass], requests: [ask] })), false);
+  assert.equal(trainCandidate(facts({ ...reviewed, smokes: [pass], requests: [ask], seen: [messageID(4, 'asks', 'form_1')] })), false);
+  assert.equal(trainCandidate(facts({ ...reviewed, smokes: [pass], worker: { id: 'ses_orch_4', active: false, created: 0, idle: 100 } })), true);
+  assert.equal(trainCandidate(facts({ ...reviewed, smokes: [pass], worker: { id: 'ses_orch_4', active: true, created: 0 }, localHead: 'abc', commitTime: 0, now: 45 * 60_000 })), true);
+  // Every remaining merge-blocking condition excludes.
+  for (const patch of [
+    { ci: 'pending' }, { escalated: true }, { smokes: [] }, { reviews: [], smokes: [] },
+    { merge: { id: 'ses_orch_4_merge_abc', active: true, created: 0 } },
+  ] as Partial<Facts>[]) {
+    assert.equal(trainCandidate(facts({ ...reviewed, smokes: [pass], ...patch })), false, JSON.stringify(patch));
+  }
+  const merged = ready(); merged.pr!.merged = true;
+  assert.equal(trainCandidate(merged), false);
+  const draft = ready(); draft.pr!.draft = true;
+  assert.equal(trainCandidate(draft), false);
+  assert.equal(trainCandidate(facts({ ...reviewed, smokes: [pass], pr: undefined })), false);
 });

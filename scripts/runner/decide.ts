@@ -119,3 +119,13 @@ export function decide(f: Facts): Decision {
   if (asks.length) return out(d.stage);
   return d;
 }
+
+// A merge-train candidate: the pre-notice decision would be `merge` if the PR were
+// neither behind nor conflicting. Marking every notice ID seen suppresses the notice
+// override (no-progress and stopped never remove a candidate), while a pending asks
+// request still blocks merge itself.
+export function trainCandidate(f: Facts): boolean {
+  if (!f.pr) return false;
+  const d = decide({ ...f, seen: [...f.seen, ...noticeCandidates(f).map(n => n.id)], pr: { ...f.pr, behind: false, conflict: false } });
+  return d.action.kind === 'merge';
+}

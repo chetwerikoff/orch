@@ -35,6 +35,10 @@ SMOKE     --fail (2nd)-->                       ESCALATED
 FIXING    --new head pushed-->                  CI
 READY     --runner starts merge agent-->        MERGED
 READY     --behind / conflict-->                FIXING
+READY(2+) --runner builds one train-->          TRAIN    (one CI run on the train branch)
+TRAIN     --green and current-->                MERGED   (main fast-forwards; Issues close)
+TRAIN     --red-->                              FIXING   (members fall back to the per-PR path)
+TRAIN     --main moved / member drift-->        deleted (next scheduled tick may rebuild)
 any       --worker owes work, session stopped-->  notify orchestrator
 any       --session running, no new head 20m-->  notify orchestrator (again every 20m)
 ```
@@ -56,7 +60,8 @@ any       --session running, no new head 20m-->  notify orchestrator (again ever
   Reviewers use [`prompts/pr-review.md`](../prompts/pr-review.md).
 - **Merge:** on READY the runner starts a fresh merge agent. It merges the PR,
   adopts the merged `main` in the operator checkout, applies any local adoption
-  steps, and removes the worker's worktree.
+  steps, and removes the worker's worktree. With two or more ready PRs the
+  runner lands them as one [merge train](#merge-train) instead.
 - **Reviewer outage** is retried on the next run and does not consume a round.
 - **Escalation** goes to the orchestrator and, from there, to the architect, who
   asks the operator only for what the system lacks. The
@@ -122,6 +127,57 @@ Same model as orchestrator-pack.
   the failing row. No secrets or private data in the report.
 - **A same-PR PASS stays valid across later heads.** Required CI is always bound
   to the current head.
+
+## Merge train
+
+Two or more ready PRs land together as one train instead of N sequential
+merge-and-update rounds: N ready PRs cost one CI run and no worker update
+turns. The runner owns the train; the only LLM step is local adoption and
+cleanup. Operational details (facts reads, branch name, notices, credentials,
+dry-run output, REST cost): [runner.md](runner.md#merge-trains).
+
+- **Members.** On a scheduled tick, a candidate is an open `orch:active` Issue
+  whose PR would get the `merge` action if it were neither behind nor
+  conflicting: CI green on its own head, review complete, smoke PASS or
+  not-applicable, not escalated, no merge session, and no pending `asks`
+  request. `no-progress` and `stopped` notices do not remove a candidate.
+  Members merge in ascending Issue order.
+- **Tick order.** A scheduled tick collects every Issue's facts and decisions
+  first, then evaluates trains (build, CI, landing, cleanup), then executes the
+  per-Issue actions. Only scheduled ticks build, land, or delete trains.
+- **Member suppression.** While their train is current and not red, or landed,
+  members get neither `merge` nor `base`; notices, escalation, and `finish`
+  still run. A non-scheduled tick suppresses members of any listed train
+  branch; the next scheduled tick settles the train.
+- **One open train.** No train is built while a current train exists (red or
+  not); landed trains never block a build. A candidate outside the open train
+  takes the per-PR path; if that moves `main`, the open train goes stale.
+- **Branch.** `orch/train/<main sha7>/<n1>-<n2>-…` is the only train state; the
+  name carries the base and every member.
+- **Current.** A train is current while `origin/main` equals its base, its
+  first-parent chain is exactly one `--no-ff` merge per member back to the
+  base, each merge's second parent equals that member's PR head, and every
+  member is still a candidate. Otherwise it is stale and deleted. A train whose
+  SHA equals `origin/main` or is an ancestor of it is landed — never stale —
+  and is completed idempotently: close member Issues, start the adoption
+  session, delete the branch last, after the session stops and every member
+  still listed with `orch:active` reads `merged_at`. A member whose facts failed
+  on the tick leaves its train unclassified: no landing, no deletion. A landed
+  train still suppresses `merge` for a member only while its PR head is the head
+  the train landed; a drifted head resumes the per-PR path so `merged_at` can
+  appear.
+- **CI and landing.** CI runs on the train branch push. When every check on the
+  train SHA succeeds, the runner fast-forwards `main` to the train (a plain
+  push, never forced). A failed check — or no green CI 30 minutes after the
+  train commit — leaves the red branch in place as the fact "this combination
+  is red on this `main`", queues one `train-red` notice, and every member falls
+  back to the per-PR path until a head or `main` change makes the train stale.
+  There is no bisection and no automatic retry.
+- **After landing** the runner starts one adoption session
+  (`ses_orch_train_<train sha7>`, merge model) in the operator checkout. Its
+  prompt binds `MERGE_SHA` to the train SHA and lists every member PR, head,
+  Issue, and worktree; it adopts `main` at the train SHA and cleans every
+  member worktree by `merge-with-local-adoption`. It merges nothing.
 
 ## Orchestrator
 

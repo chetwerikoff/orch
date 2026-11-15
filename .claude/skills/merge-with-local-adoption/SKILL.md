@@ -54,6 +54,10 @@ merged state/time and real merge commit SHA (`MERGE_SHA`) before claiming succes
 Record the merged PR head and base. Never substitute the PR head for an unobserved
 merge SHA. On refusal, report the exact failure and next authorized action.
 
+A runner merge-train adoption session binds `MERGE_SHA` to the train SHA the
+runner already fast-forwarded onto `main`: it cleans exactly one member worktree
+per member PR and merges nothing.
+
 ## 4. Adopt locally
 
 Fetch the intended default branch into the selected operator checkout and update
